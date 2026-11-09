@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+output/
+tools/
+config/
+data/google_client.json
+data/client_secret_*.json
+# Google OAuth 用戶端 ID 與密碼，勿上傳
+data/oauth.txt
+# 本機備份
+_backup_*/
