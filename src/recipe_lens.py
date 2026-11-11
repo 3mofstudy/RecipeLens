@@ -1,5 +1,6 @@
 """共用轉換流程與命令列入口。"""
 import argparse
+import json
 import math
 from pathlib import Path
 import re
@@ -7,26 +8,32 @@ import shutil
 import tempfile
 from uuid import uuid4
 
-from .ai_recipe import AI_PROVIDERS, PROVIDER_TOOLS, claude_logged_in, claude_login, interpret
+from .ai_recipe import AI_PROVIDERS, PROVIDER_TOOLS, cli_logged_in, cli_login, interpret
+from .setup_check import missing_tool_message
 from .environment import find_tools
 from .document_export import export_documents, validate_filename
 from .facebook_download import download_facebook
 from .media import SPEECH_LANGUAGES, get_transcript, plain_subtitle_text, run, screenshot
 from .recipe_export import export_recipe
+from .recovery import job_workspace, perform
 from .video_download import detect_platform
 from .youtube_download import download_youtube, has_complete_recipe, inspect_youtube
 
-DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "output"
-PLATFORM_PREFIX = {"Facebook": "FB", "YouTube": "YT"}
+from .app_paths import OUTPUT_ROOT
+
+DEFAULT_OUTPUT = OUTPUT_ROOT
+PLATFORM_PREFIX = {"Facebook": "Facebook", "YouTube": "Youtuber"}
 
 
-def recipe_stem(platform, title):
-    """依「平台-食譜名」命名，例如 FB-蔥爆豬肉、YT-蔥爆豬肉。"""
+def recipe_stem(platform, title, channel=None):
+    """依「平台-頻道名稱-食譜名稱」命名。"""
     name = re.sub(r"[【\[(（<《].*?[】\])）>》]", "", title or "")
     name = re.sub(r"#\S+", "", name)
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name)
     name = re.sub(r"\s+", " ", name).strip(" .")[:40].strip(" .") or "食譜"
-    return validate_filename(f"{PLATFORM_PREFIX[platform]}-{name}")
+    channel = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", channel or "")
+    channel = re.sub(r"\s+", " ", channel).strip(" .")[:40].strip(" .") or "未知頻道"
+    return validate_filename(f"{PLATFORM_PREFIX[platform]}-{channel}-{name}")
 
 
 def unique_folder(parent, name):
@@ -40,7 +47,12 @@ def unique_folder(parent, name):
 
 def convert_video(url, output=DEFAULT_OUTPUT, *, platform=None, subtitle_mode="auto",
                   keep_subtitles=False, subtitle_file=None, model=None, progress=print,
-                  speech_language="其他", file_stem=None, provider="Codex"):
+                  speech_language="其他", file_stem=None, provider="Codex", on_error=None,
+                  local_formats=("md", "pdf", "docx")):
+    local_formats = tuple(local_formats)
+    if any(suffix not in {"md", "pdf", "docx"} for suffix in local_formats):
+        raise ValueError("不支援的本機輸出類型。")
+    documents = tuple(suffix for suffix in local_formats if suffix != "md")
     if file_stem is not None:
         file_stem = validate_filename(file_stem)
     detected = detect_platform(url)
@@ -60,28 +72,38 @@ def convert_video(url, output=DEFAULT_OUTPUT, *, platform=None, subtitle_mode="a
         raise ValueError("找不到工具，請安裝並加入 PATH：" + "、".join(missing))
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".recipe-lens-", dir=output) as folder:
+    with job_workspace(output, progress) as folder:
         work = Path(folder)
         metadata = {}
         direct = False
         if detected == "YouTube":
             progress("正在檢查 YouTube 資訊欄…")
-            metadata = inspect_youtube(url, work, tools)
+            metadata = perform("檢查 YouTube 資訊欄", lambda: inspect_youtube(url, work, tools), on_error)
             direct = has_complete_recipe(metadata.get("description") or "")
         ai_tool = tools.get(PROVIDER_TOOLS[provider])
         if not direct and not ai_tool:
-            raise ValueError(f"找不到 {provider} CLI，請安裝並登入，或在「更多設定」改選其他 AI。")
-        if not direct and provider == "Claude" and not claude_logged_in(ai_tool):
-            progress("Claude 尚未登入，已開啟瀏覽器，請用 Pro／Max 月租帳號登入…")
-            claude_login(ai_tool)
+            raise ValueError(missing_tool_message(provider))
+        if not direct and cli_logged_in(provider, ai_tool) is False:
+            account = "Pro／Max 月租帳號" if provider == "Claude" else "ChatGPT 帳號"
+            progress(f"{provider} 尚未登入，已開啟瀏覽器，請用{account}登入…")
+            perform("AI 登入", lambda: cli_login(provider, ai_tool), on_error)
         progress("正在下載影片…")
         downloader = download_youtube if detected == "YouTube" else download_facebook
         download_mode = "none" if subtitle_file and subtitle_mode == "original" else subtitle_mode
-        video = downloader(url, work, tools, download_mode)
-        duration = float(run(
+        video = perform("下載影片", lambda: downloader(url, work, tools, download_mode), on_error)
+        # 兩個平台下載時都會保存 metadata；沿用資料，避免額外網路請求。
+        metadata_file = work / "source.info.json"
+        if metadata_file.is_file():
+            try:
+                downloaded = json.loads(metadata_file.read_text(encoding="utf-8"))
+                if isinstance(downloaded, dict):
+                    metadata = {**metadata, **downloaded}
+            except (ValueError, OSError):
+                pass
+        duration = float(perform("讀取影片長度", lambda: run(
             [tools["ffprobe"], "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(video)], folder=work,
-        ))
+        ), on_error))
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("無法確認影片長度。")
         original = ""
@@ -101,24 +123,26 @@ def convert_video(url, output=DEFAULT_OUTPUT, *, platform=None, subtitle_mode="a
                 else:
                     progress("無法取得平台字幕，改用本機語音轉錄…")
             if not original.strip() and (not direct or keep_subtitles):
-                original = get_transcript(work, video, tools["ffmpeg"], tools["ffprobe"],
-                                          speech_language=speech_language)
+                original = perform("字幕／語音辨識", lambda: get_transcript(
+                    work, video, tools["ffmpeg"], tools["ffprobe"], speech_language=speech_language), on_error)
         destination = output / f"recipe-{uuid4().hex[:12]}"
         if direct:
             progress("資訊欄包含食材與做法，直接保留原文…")
-            result = export_description(metadata, url, duration, tools["ffmpeg"],
-                                        video, work, destination)
+            result = perform("資訊欄與參考畫面匯出", lambda: export_description(
+                metadata, url, duration, tools["ffmpeg"], video, work, destination), on_error)
             title = metadata.get("title")
         else:
             progress("正在讀取字幕或辨識語音…")
             transcript = (original if subtitle_mode == "original" else
-                          get_transcript(work, video, tools["ffmpeg"], tools["ffprobe"],
-                                         speech_language=speech_language))
+                          perform("字幕／語音辨識", lambda: get_transcript(
+                              work, video, tools["ffmpeg"], tools["ffprobe"],
+                              speech_language=speech_language), on_error))
             progress(f"正在由 {provider} 判讀食譜與影片畫面…")
-            recipe = interpret(work, ai_tool, tools["ffmpeg"], video,
+            recipe = perform("AI 判讀", lambda: interpret(work, ai_tool, tools["ffmpeg"], video,
                                duration, transcript, model, subtitle_mode == "embedded",
-                               provider=provider)
-            result = export_recipe(recipe, url, duration, tools["ffmpeg"], video, work, destination)
+                               provider=provider), on_error)
+            result = perform("食譜與截圖匯出", lambda: export_recipe(
+                recipe, url, duration, tools["ffmpeg"], video, work, destination), on_error)
             title = recipe.get("title")
         if keep_subtitles:
             with result.open("a", encoding="utf-8") as stream:
@@ -128,24 +152,28 @@ def convert_video(url, output=DEFAULT_OUTPUT, *, platform=None, subtitle_mode="a
                 escaped = (re.sub(r"^(\d+)([.)])", r"\1\\\2", re.sub(r"^([#>*+\-=|`~])", r"\\\1", line))
                            for line in text.splitlines())
                 stream.write("  \n".join(escaped) + "\n")
-        file_stem = file_stem or recipe_stem(detected, title)
+        channel = metadata.get("channel") or metadata.get("uploader") or metadata.get("creator")
+        file_stem = file_stem or recipe_stem(detected, title, channel)
         if result.stem != file_stem:
             result = result.rename(result.with_name(f"{file_stem}.md"))
         # 資料夾與檔案同名，方便在輸出位置辨識。
         folder_target = unique_folder(output, file_stem)
         result = result.parent.rename(folder_target) / result.name
-        progress("正在本機自動儲存 PDF 與 DOCX…")
-        try:
-            export_documents(result, ("pdf", "docx"), output_dir=result.parent)
-        except Exception as error:
-            raise RuntimeError(f"Markdown 與圖片已保留於 {result.parent}，但 PDF／DOCX 轉檔未完成：{error}") from error
+        if documents:
+            progress("正在儲存選取的本機文件…")
+            try:
+                perform("PDF／DOCX 轉檔", lambda: export_documents(
+                    result, documents, output_dir=result.parent), on_error)
+            except Exception as error:
+                detail = str(error).strip() or type(error).__name__
+                raise RuntimeError(f"Markdown 與圖片已保留於 {result.parent}，但所選文件轉檔未完成：{detail}") from error
         return result
 
 
 def export_description(metadata, url, duration, ffmpeg, video, work, destination):
     staged = work / "recipe"
     images = staged / "images"
-    images.mkdir(parents=True)
+    images.mkdir(parents=True, exist_ok=True)
     lines = [f"# {metadata.get('title') or '影片食譜'}", "", f"來源影片：<{url}>",
              "", "## 發布者資訊欄原文", "", metadata["description"],
              "", "## 影片參考畫面", "",
@@ -193,7 +221,7 @@ def main():
     parser.add_argument("--provider", choices=list(AI_PROVIDERS), default="Codex",
                         help="判讀食譜的 AI 平台")
     parser.add_argument("--model")
-    parser.add_argument("--name", help="本機 MD、PDF、DOCX 共用檔名，不含副檔名；省略時由 AI 命名為「平台-食譜名」")
+    parser.add_argument("--name", help="本機 MD、PDF、DOCX 共用檔名，不含副檔名；省略時命名為「平台-頻道名稱-食譜名稱」")
     parser.add_argument("--subtitle-mode", choices=["auto", "embedded", "none", "original"], default="auto")
     parser.add_argument("--keep-subtitles", action="store_true")
     parser.add_argument("--subtitle-file", type=Path)

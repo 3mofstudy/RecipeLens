@@ -1,11 +1,12 @@
 """雲端資料夾瀏覽視窗：列出、進入、上一層、新增資料夾與選定，Drive API 以模擬物件代替。"""
 from pathlib import Path
 import tempfile
-import tkinter as tk
+import time
 import unittest
 from unittest.mock import patch
 
 from src import drive_browser
+from tests.qt_support import QT_APP
 
 FOLDER = drive_browser.FOLDER_MIME
 
@@ -39,8 +40,8 @@ class FakeDrive:
 
 class DriveBrowserTests(unittest.TestCase):
     def setUp(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
+        self.qt = QT_APP
+        self.dialogs = []
         self.drive = FakeDrive()
         self.tmp = tempfile.TemporaryDirectory()
         self.patches = [
@@ -55,65 +56,89 @@ class DriveBrowserTests(unittest.TestCase):
     def tearDown(self):
         for item in self.patches:
             item.stop()
-        self.root.destroy()
+        for dialog in self.dialogs:
+            dialog.reject()
+            dialog.deleteLater()
+        self.qt.processEvents()
         self.tmp.cleanup()
 
+    def wait(self, dialog):
+        deadline = time.monotonic() + 3
+        while dialog.loading and time.monotonic() < deadline:
+            dialog.poll()
+            self.qt.processEvents()
+            time.sleep(0.005)
+        self.assertFalse(dialog.loading, '資料夾背景工作逾時')
+
+    def open_dialog(self, start_folder=None):
+        dialog = drive_browser.DriveFolderDialog(None, object(), start_folder)
+        self.dialogs.append(dialog)
+        self.wait(dialog)
+        return dialog
+
     def names(self, dialog):
-        return [dialog.children[item]["name"] for item in dialog.tree.get_children()]
+        return [dialog.tree.topLevelItem(i).text(0) for i in range(dialog.tree.topLevelItemCount())]
 
     def select(self, dialog, name):
-        for item, folder in dialog.children.items():
-            if folder["name"] == name:
-                dialog.tree.selection_set(item)
-                dialog.tree.update()
+        for i in range(dialog.tree.topLevelItemCount()):
+            item = dialog.tree.topLevelItem(i)
+            if item.text(0) == name:
+                dialog.tree.setCurrentItem(item)
                 return
 
     def test_navigate_up_and_down(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object())
+        dialog = self.open_dialog()
         self.assertEqual(sorted(self.names(dialog)), ["09.我的食譜", "工作"])
-        self.assertIn("disabled", dialog.up_button.state())
+        self.assertFalse(dialog.up_button.icon().isNull())
+        self.assertFalse(dialog.new_button.icon().isNull())
+        self.assertFalse(dialog.up_button.isEnabled())
         self.select(dialog, "09.我的食譜")
         dialog.open_selected()
+        self.wait(dialog)
         self.assertEqual(self.names(dialog), ["湯品"])
-        self.assertEqual(dialog.location.get(), "我的雲端硬碟 > 09.我的食譜")
+        self.assertEqual(dialog.location.text(), "我的雲端硬碟 > 09.我的食譜")
         dialog.go_up()
-        self.assertEqual(dialog.location.get(), "我的雲端硬碟")
-        dialog.cancel()
+        self.wait(dialog)
+        self.assertEqual(dialog.location.text(), "我的雲端硬碟")
+        dialog.reject()
 
     def test_start_in_last_folder(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object(), start_folder="c")
-        self.assertEqual(dialog.location.get(), "我的雲端硬碟 > 09.我的食譜 > 湯品")
-        dialog.cancel()
+        dialog = self.open_dialog(start_folder="c")
+        self.assertEqual(dialog.location.text(), "我的雲端硬碟 > 09.我的食譜 > 湯品")
+        dialog.reject()
 
     def test_new_folder_is_created_and_selected(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object(), start_folder="a")
-        with patch.object(drive_browser.simpledialog, "askstring", return_value="甜點"):
+        dialog = self.open_dialog(start_folder="a")
+        with patch("src.qt_drive_dialog.QInputDialog.getText", return_value=("甜點", True)):
             dialog.new_folder()
+            self.wait(dialog)
         self.assertIn("甜點", self.names(dialog))
         self.assertEqual(dialog.selected_target()["name"], "甜點")
         self.assertEqual(self.drive.items["new1"]["parents"], ["a"])
-        dialog.cancel()
+        dialog.reject()
 
     def test_choose_selected_or_current_folder(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object(), start_folder="a")
+        dialog = self.open_dialog(start_folder="a")
         dialog.choose()
-        self.assertEqual(dialog.result["id"], "a")
+        self.wait(dialog)
+        self.assertEqual(dialog.selection["id"], "a")
         self.assertEqual(drive_browser.last_folder_id(), "a")
-        dialog = drive_browser.DriveFolderDialog(self.root, object(), start_folder="a")
+        dialog = self.open_dialog(start_folder="a")
         self.select(dialog, "湯品")
         dialog.choose()
-        self.assertEqual(dialog.result["id"], "c")
-        self.assertEqual([p["name"] for p in dialog.result["path"]], ["我的雲端硬碟", "09.我的食譜", "湯品"])
+        self.wait(dialog)
+        self.assertEqual(dialog.selection["id"], "c")
+        self.assertEqual([p["name"] for p in dialog.selection["path"]], ["我的雲端硬碟", "09.我的食譜", "湯品"])
 
     def test_cancel_returns_none(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object())
-        dialog.cancel()
-        self.assertIsNone(dialog.result)
+        dialog = self.open_dialog()
+        dialog.reject()
+        self.assertIsNone(dialog.selection)
 
     def test_missing_last_folder_falls_back_to_root(self):
-        dialog = drive_browser.DriveFolderDialog(self.root, object(), start_folder="gone")
-        self.assertEqual(dialog.location.get(), "我的雲端硬碟")
-        dialog.cancel()
+        dialog = self.open_dialog(start_folder="gone")
+        self.assertEqual(dialog.location.text(), "我的雲端硬碟")
+        dialog.reject()
 
 
 if __name__ == "__main__":

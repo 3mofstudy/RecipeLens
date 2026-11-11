@@ -1,0 +1,88 @@
+# 每次推送都打包 Windows 安裝程式；推送 v* 標籤時另外發布到 GitHub Releases。
+name: Windows 安裝程式
+
+on:
+  push:
+    branches: [main, RecipeLens-win]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: 安裝 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: 寫入 Google 用戶端
+        shell: pwsh
+        env:
+          GOOGLE_CLIENT_JSON: ${{ secrets.GOOGLE_CLIENT_JSON }}
+        run: |
+          if ($env:GOOGLE_CLIENT_JSON) {
+            New-Item -ItemType Directory -Force data | Out-Null
+            [IO.File]::WriteAllText("$PWD\data\google_client.json", $env:GOOGLE_CLIENT_JSON)
+          } else {
+            Write-Warning "未設定 GOOGLE_CLIENT_JSON Secret，安裝版將無法上傳 Google 雲端硬碟。"
+          }
+
+      - name: 寫入錯誤回報接收端
+        shell: pwsh
+        env:
+          REPORT_ENDPOINT_JSON: ${{ secrets.REPORT_ENDPOINT_JSON }}
+        run: |
+          if ($env:REPORT_ENDPOINT_JSON) {
+            New-Item -ItemType Directory -Force data | Out-Null
+            [IO.File]::WriteAllText("$PWD\data\report_endpoint.json", $env:REPORT_ENDPOINT_JSON)
+          } else {
+            Write-Warning "未設定 REPORT_ENDPOINT_JSON Secret，安裝版將無法回報錯誤。"
+          }
+
+      - name: 確認版本號與標籤一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "pyproject.toml 的版本 $version 與標籤 ${{ github.ref_name }} 不一致"
+          }
+
+      - name: 打包
+        id: build
+        shell: pwsh
+        run: ./packaging/build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RecipeLens-Setup-${{ steps.build.outputs.version }}
+          path: ${{ steps.build.outputs.installer }}
+
+      # 固定檔名的副本讓 releases/latest/download/RecipeLens-Setup.exe 永遠指向最新版。
+      - name: 準備固定檔名
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: Copy-Item "${{ steps.build.outputs.installer }}" RecipeLens-Setup.exe
+
+      - name: 發布 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.build.outputs.installer }}
+            RecipeLens-Setup.exe
+          generate_release_notes: true

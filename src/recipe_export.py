@@ -8,7 +8,7 @@ def export_recipe(recipe, url, duration, ffmpeg, video, work, destination):
     print("正在擷取步驟截圖並匯出 Markdown…", flush=True)
     staged = work / "recipe"
     images = staged / "images"
-    images.mkdir(parents=True)
+    images.mkdir(parents=True, exist_ok=True)
     lines = [f"# {recipe['title']}", "", f"來源影片：<{url}>", "", "## 食材", ""]
     lines.extend(f"- {item['name']}：{item['amount']}" for item in recipe["ingredients"])
     if not recipe["ingredients"]:

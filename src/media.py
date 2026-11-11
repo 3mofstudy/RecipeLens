@@ -2,11 +2,38 @@
 import html
 import re
 import subprocess
+import time
+import os
+from threading import Lock
+from .cancellation import check_cancelled, current_event
 from pathlib import Path
 
 SPEECH_LANGUAGES = ("國語", "粵語", "閩南語", "其他")
 # Windows 上執行外部工具時不跳出黑色命令視窗
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# 執行中的外部工具；強制結束 App 時一併終止，避免留下背景程序。
+_ACTIVE = set()
+_ACTIVE_LOCK = Lock()
+
+
+def _terminate(process):
+    if process.poll() is None:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           capture_output=True, creationflags=NO_WINDOW)
+        if process.poll() is None:
+            process.kill()
+
+
+def kill_active_processes():
+    """終止所有仍在執行的外部工具（yt-dlp、ffmpeg、Codex／Claude CLI）及其子程序。"""
+    with _ACTIVE_LOCK:
+        processes = list(_ACTIVE)
+    for process in processes:
+        try:
+            _terminate(process)
+        except OSError:
+            pass
 
 
 def speech_settings(language):
@@ -22,7 +49,11 @@ def speech_settings(language):
     return "small", None, None
 
 def run(command, *, folder, prompt=None, timeout=900, env=None):
-    result = subprocess.run(
+    check_cancelled()
+    if current_event() is not None:
+        result = _run_cancellable(command, folder, prompt, timeout, env)
+    else:
+        result = subprocess.run(
         command, cwd=folder, input=prompt, capture_output=True,
         encoding="utf-8", errors="replace", timeout=timeout, env=env,
         creationflags=NO_WINDOW,
@@ -35,6 +66,37 @@ def run(command, *, folder, prompt=None, timeout=900, env=None):
                 detail = errors[-1]
         raise ValueError(f"{Path(command[0]).stem} 執行失敗：\n{detail[-3000:]}")
     return result.stdout.strip()
+
+
+def _run_cancellable(command, folder, prompt, timeout, env):
+    with subprocess.Popen(
+        command, cwd=folder, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, encoding="utf-8", errors="replace", env=env,
+        creationflags=NO_WINDOW,
+    ) as process:
+        with _ACTIVE_LOCK:
+            _ACTIVE.add(process)
+        started = time.monotonic()
+        first = True
+        try:
+            while True:
+                check_cancelled()
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=prompt if first else None, timeout=min(0.2, remaining))
+                    check_cancelled()
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    first = False
+        finally:
+            with _ACTIVE_LOCK:
+                _ACTIVE.discard(process)
+            if process.poll() is None:
+                _terminate(process)
+                process.communicate()
 
 
 _TIMING = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?[.,]\d{1,3}\s*-->")
@@ -89,7 +151,7 @@ def get_transcript(work, video, ffmpeg, ffprobe, speech_language="其他"):
     print(f"正在辨識語音（{speech_language}，首次使用會下載 {model_name} 模型）…", flush=True)
     audio = work / "audio.wav"
     run(
-        [ffmpeg, "-v", "error", "-i", str(video), "-vn", "-ac", "1",
+        [ffmpeg, "-y", "-v", "error", "-i", str(video), "-vn", "-ac", "1",
          "-ar", "16000", str(audio)],
         folder=work,
     )
@@ -97,12 +159,16 @@ def get_transcript(work, video, ffmpeg, ffprobe, speech_language="其他"):
     segments, _ = model.transcribe(
         str(audio), vad_filter=True, language=language_code, initial_prompt=prompt,
     )
-    return "\n".join(f"[{part.start:.2f} 秒] {part.text.strip()}" for part in segments)
+    lines = []
+    for part in segments:
+        check_cancelled()
+        lines.append(f"[{part.start:.2f} 秒] {part.text.strip()}")
+    return "\n".join(lines)
 
 
 def screenshot(ffmpeg, video, seconds, target, work):
     run(
-        [ffmpeg, "-v", "error", "-ss", f"{seconds:.3f}", "-i", str(video),
+        [ffmpeg, "-y", "-v", "error", "-ss", f"{seconds:.3f}", "-i", str(video),
          "-map", "0:v:0", "-frames:v", "1", "-vf",
          "scale=960:960:force_original_aspect_ratio=decrease",
          "-q:v", "3", "-update", "1", str(target)],

@@ -9,8 +9,9 @@ from filelock import FileLock
 
 from .document_export import export_documents
 from .local_storage import read_json, write_json
+from .app_paths import DATA_ROOT, RESOURCE_ROOT
 
-CONFIG = Path(__file__).resolve().parent.parent / "config"
+CONFIG = DATA_ROOT / "config"
 CLIENT_FILE = CONFIG / "google_client.json"
 TOKEN_FILE = CONFIG / "google_token.json"
 # 自製的雲端資料夾瀏覽視窗需要列出使用者全部資料夾，drive.file 只看得到 App 建立的檔案。
@@ -33,7 +34,8 @@ def configure_google(client_file):
 def ensure_client_config():
     if CLIENT_FILE.is_file():
         return
-    bundled = CONFIG.parent / "data" / "google_client.json"
+    # 安裝版的用戶端由打包流程嵌入程式資源。
+    bundled = RESOURCE_ROOT / "data" / "google_client.json"
     if bundled.is_file():
         configure_google(bundled)
         return
@@ -237,7 +239,8 @@ def markdown_for_drive(markdown, folder_name):
 
 
 def upload_recipe(markdown, formats=("pdf",), *, service=None, progress=print,
-                  parent_id=None, file_stem=None, new_folder=None, include_images=True):
+                  parent_id=None, file_stem=None, new_folder=None, include_images=True,
+                  stage_missing=False):
     """上傳 .md 時一併上傳圖片。
 
     指定 new_folder（每份食譜自己的資料夾）時，圖片放在其中的 images 資料夾，
@@ -249,7 +252,18 @@ def upload_recipe(markdown, formats=("pdf",), *, service=None, progress=print,
         new_folder = validate_name(new_folder)
     progress("正在建立上傳用的文件，本機食譜與圖片會保留…")
     markdown = Path(markdown).resolve()
-    files = export_documents(markdown, formats, output_dir=markdown.parent)
+    formats = tuple(formats)
+    if stage_missing:
+        local = {suffix: markdown.with_suffix("." + suffix) for suffix in formats}
+        missing = tuple(suffix for suffix, file in local.items() if not file.is_file())
+        if missing:
+            staging = markdown.parent / ".drive" / "documents"
+            staging.mkdir(parents=True, exist_ok=True)
+            staged = export_documents(markdown, missing, output_dir=staging)
+            local.update((file.suffix[1:], file) for file in staged)
+        files = list(local.values())
+    else:
+        files = export_documents(markdown, formats, output_dir=markdown.parent)
     images = markdown_images(markdown) if include_images and "md" in formats else []
     image_folder = "images" if new_folder is not None else f"{file_stem or markdown.stem}_images"
     if images:

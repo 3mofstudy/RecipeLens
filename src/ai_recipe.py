@@ -1,18 +1,107 @@
 """AI 食譜判讀，支援 Codex CLI 與 Claude Code CLI。"""
+import base64
 import json
 import math
 import os
+from pathlib import Path
 import re
 
 import subprocess
 
-from .media import NO_WINDOW, run, screenshot
+from .cancellation import current_event
+from .media import NO_WINDOW, _run_cancellable, run, screenshot
 
-# 第一層：AI 平台；第二層：對應模型。下拉選單可直接輸入清單外的模型名稱。
+# 第一層：AI 平台；第二層：對應模型，依「最省額度」排序，第一個為預設值。下拉選單可直接輸入清單外的模型名稱。
+# 舊版的「自動（由 CLI 選擇）」已移除；設定檔若存著它，讀取時改回預設模型。
+AUTO_MODEL = "自動（由 CLI 選擇）"
 AI_PROVIDERS = {
-    "Codex": ("gpt-5.6-sol", "gpt-5.5", "gpt-5.5-codex", "gpt-5"),
-    "Claude": ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "opus", "sonnet"),
+    # 清單是候選名稱，實際可用性依帳號與 CLI 端點而異。
+    "Codex": ("gpt-6-luna", "gpt-5.6-sol", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"),
+    "Claude": ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"),
 }
+# 模型被拒時依序改用：先省略 --model 沿用 Codex 本身的設定（使用者原本可用的模型），
+# 再試 gpt-5.6-sol（舊版 Codex 可用）、gpt-6-luna（免費方案）、gpt-6.1-sol（新版付費方案）。
+CODEX_FALLBACK_MODELS = ("gpt-5.6-sol", "gpt-6-luna", "gpt-6.1-sol")
+# ChatGPT 登入已停用的 Codex 模型；舊設定若存了這些，改回「自動」
+RETIRED_MODELS = {"gpt-5", "gpt-5-codex", "gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-spark",
+                  "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.5-codex"}
+
+
+# 下拉選單在模型名稱後加註說明，例如 gpt-6-luna(免費模型)；送給 CLI 前會去掉註腳。
+MODEL_NOTES = {
+    "gpt-5.6-sol": "舊版 Codex 可用",
+    "gpt-6.1-sol": "較精準，付費方案建議",
+    "gpt-6.1-terra": "速度快、擅長看畫面",
+    "gpt-6-astra": "最強，最耗額度",
+    "gpt-6-luna": "免費模型",
+    "claude-opus-5-5": "最強，最耗額度",
+    "claude-sonnet-5-5": "均衡",
+    "claude-haiku-5-5": "速度快、省額度",
+}
+# ChatGPT 免費與 Go 方案在 Codex 只能使用 gpt-6-luna。
+FREE_CODEX_PLANS = {"free", "go"}
+FREE_CODEX_MODEL = "gpt-6-luna"
+PLAN_NAMES = {"free": "免費", "go": "Go", "plus": "Plus", "pro": "Pro", "team": "Team",
+              "business": "Business", "enterprise": "Enterprise", "edu": "Edu"}
+
+
+class CodexPlanError(ValueError):
+    """Codex 拒絕所有模型（版本過舊或帳號尚未開放）；AI 修不了，不需自動修復或回報開發者。"""
+
+
+def model_label(name):
+    note = MODEL_NOTES.get(name)
+    return f"{name}({note})" if note else name
+
+
+def model_id(text):
+    """去掉下拉選單的註腳，取回模型名稱；「自動」原樣保留。"""
+    text = (text or "").strip()
+    if text == AUTO_MODEL:
+        return text
+    return re.sub(r"\s*[（(][^（()）]*[)）]\s*$", "", text).strip()
+
+
+def is_free_codex_plan(plan):
+    return (plan or "").lower() in FREE_CODEX_PLANS
+
+
+def model_choices(provider, plan=None):
+    """依平台與 ChatGPT 方案回傳可選模型；免費／Go 方案只有 gpt-6-luna。"""
+    if provider == "Codex" and is_free_codex_plan(plan):
+        return (FREE_CODEX_MODEL,)
+    return AI_PROVIDERS[provider]
+
+
+def codex_home():
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def codex_plan(home=None):
+    """讀 Codex 登入資訊中的 ChatGPT 方案（free、go、plus、pro…）；未登入、用 API 金鑰或無法判斷時回傳 None。
+
+    只在本機解碼 id_token 的方案欄位，不驗證、不輸出、不傳送任何權杖。
+    """
+    try:
+        data = json.loads((Path(home) if home else codex_home()).joinpath("auth.json").read_text(encoding="utf-8"))
+        token = data["tokens"]["id_token"]
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        plan = claims["https://api.openai.com/auth"]["chatgpt_plan_type"]
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+    return plan.strip().lower() if isinstance(plan, str) and plan.strip() else None
+
+
+def normalize_model(model):
+    model = model_id(model)
+    return None if not model or model == AUTO_MODEL else model
+
+
+def is_model_error(text):
+    text = str(text).lower()
+    return "model_not_found" in text or ("model" in text and "not supported" in text)
 # 取得 CLI 工具時使用的名稱
 PROVIDER_TOOLS = {"Codex": "codex", "Claude": "claude"}
 
@@ -61,6 +150,7 @@ def build_prompt(duration, timestamps, transcript, description):
 def interpret(work, codex, ffmpeg, video, duration, transcript, model, embedded=False,
               provider="Codex"):
     """codex 參數為所選平台的 CLI 路徑（沿用舊參數名稱以相容既有呼叫）。"""
+    model = normalize_model(model)
     if provider not in AI_PROVIDERS:
         raise ValueError("AI 平台請選擇 Codex 或 Claude。")
     print(f"正在擷取候選畫面並交給 {provider} 整理…", flush=True)
@@ -93,10 +183,45 @@ def interpret_codex(work, codex, model, prompt, frames):
         "--skip-git-repo-check", "--ephemeral",
         "--output-schema", str(schema), "--output-last-message", str(answer),
     ]
-    if model:
-        command.extend(["--model", model])
-    command.extend(f"--image={name}" for name in frames)
-    run([*command, "-"], folder=work, prompt="只使用提供的素材，不呼叫工具。" + prompt)
+    images = [f"--image={name}" for name in frames]
+    prompt = "只使用提供的素材，不呼叫工具。" + prompt
+    relogged = False
+    tried = [model]
+    while True:
+        try:
+            run([*command, *(["--model", model] if model else []), *images, "-"], folder=work, prompt=prompt)
+            break
+        except ValueError as error:
+            if is_model_error(error):
+                remaining = [name for name in (None, *CODEX_FALLBACK_MODELS) if name not in tried]
+                if not remaining and FREE_CODEX_MODEL in tried:
+                    # 連所有方案都有的 gpt-6-luna 都被拒：帳號方案不開放 Codex 給外部程式（免費、Go）
+                    raise CodexPlanError(
+                        f"Codex 拒絕了所有模型（已試過：{'、'.join(name or 'Codex 本身的設定' for name in tried)}）。常見原因：\n"
+                        "1. 這台電腦的 Codex 版本太舊，還不認得新模型：請開啟 ChatGPT 桌面版讓它更新，"
+                        "或在 PowerShell 執行 codex --version 檢查。\n"
+                        "2. 帳號方案尚未開放：免費帳號的 Codex 由 OpenAI 陸續開放，部分帳號可能還不能用。\n"
+                        "可改用 Claude（需 Claude Pro 以上）。這不是 RecipeLens 的錯誤，已產生的檔案都會保留。\n"
+                        + str(error)
+                    ) from error
+                if not remaining:
+                    raise ValueError(
+                        "Codex 模型無法使用，這不是影片下載錯誤。"
+                        f"已試過：{'、'.join(name or 'CLI 預設' for name in tried)}。"
+                        "免費或 Go 方案請在進階設定選 gpt-6-luna；付費方案可選 gpt-6.1-sol。\n"
+                        + str(error)
+                    ) from error
+                # 不只省略 --model；省略後仍可能沿用同一個不支援的全域模型。
+                print(f"Codex 拒絕模型 {model or 'CLI 預設'}，改用 {remaining[0] or 'Codex 本身的設定'} 重試…", flush=True)
+                model = remaining[0]
+                tried.append(model)
+            elif not relogged and is_auth_error(error):
+                # 登入過期：開啟瀏覽器重新登入後重試一次
+                print("Codex 登入已過期，正在開啟瀏覽器重新登入…", flush=True)
+                codex_login(codex)
+                relogged = True
+            else:
+                raise
     if not answer.is_file():
         raise ValueError("Codex 沒有輸出食譜資料。")
     return validate_recipe(json.loads(answer.read_text(encoding="utf-8")))
@@ -137,14 +262,56 @@ def claude_logged_in(claude):
 def claude_login(claude, timeout=300):
     """以 `claude auth login` 在瀏覽器登入 Pro／Max 帳號，不開命令視窗；登入資訊由 Claude Code 保存。"""
     try:
-        result = subprocess.run([claude, "auth", "login"], capture_output=True, encoding="utf-8",
-                                errors="replace", timeout=timeout, env=subscription_env(),
-                                stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        result = _run_hidden([claude, "auth", "login"], timeout, env=subscription_env())
     except subprocess.TimeoutExpired as error:
         raise ValueError("Claude 登入逾時，請在瀏覽器完成登入後再試一次。") from error
     if result.returncode:
         detail = (result.stderr.strip() or result.stdout.strip())[-1500:]
         raise ValueError(f"Claude 登入未完成。\n{detail}")
+
+
+def _run_hidden(command, timeout, env=None):
+    # 在可中止的背景工作中（例如等待瀏覽器登入），按「中止執行」會立即結束 CLI。
+    if current_event() is not None:
+        return _run_cancellable(command, None, None, timeout, env)
+    return subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, env=env, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+
+
+def codex_logged_in(codex):
+    """以 `codex login status` 檢查 ChatGPT 帳號登入；無法執行 CLI 時回傳 None（不確定）。"""
+    try:
+        return _run_hidden([codex, "login", "status"], 30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def codex_login(codex, timeout=300):
+    """以 `codex login` 開啟瀏覽器登入 ChatGPT 帳號，不開命令視窗；登入資訊由 Codex 保存。"""
+    try:
+        result = _run_hidden([codex, "login"], timeout)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Codex 登入逾時，請在瀏覽器完成登入後再試一次。") from error
+    except OSError as error:
+        raise ValueError(f"無法執行 Codex CLI：{error}") from error
+    if result.returncode:
+        detail = (result.stderr.strip() or result.stdout.strip())[-1500:]
+        raise ValueError(f"Codex 登入未完成。\n{detail}")
+
+
+def cli_logged_in(provider, tool):
+    """True／False；無法判斷時回傳 None，呼叫端不強制登入。"""
+    if provider == "Claude":
+        try:
+            _run_hidden([tool, "--version"], 30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return claude_logged_in(tool)
+    return codex_logged_in(tool)
+
+
+def cli_login(provider, tool):
+    (claude_login if provider == "Claude" else codex_login)(tool)
 
 
 def interpret_claude(work, claude, model, prompt, frames):

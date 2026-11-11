@@ -12,6 +12,7 @@ dependencies = [
     "google-api-python-client",
     "google-auth-oauthlib",
     "filelock",
+    "pyside6>=6.8,<7",
 ]
 
 [project.optional-dependencies]
@@ -19,4 +20,9 @@ transcription = [
     "faster-whisper",
     # faster-whisper 1.2 uses av.open(metadata_errors=...), removed in PyAV 19.
     "av<19",
+]
+
+[dependency-groups]
+packaging = [
+    "pyinstaller>=6.22.3",
 ]

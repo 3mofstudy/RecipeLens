@@ -2,19 +2,49 @@
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zipfile import ZipFile
 
 from httplib2 import Response
 from googleapiclient.errors import HttpError
 from PIL import Image
 
-from src.cloud_upload import destination_folder, list_folders, upload_files
+from src.cloud_upload import destination_folder, list_folders, upload_files, upload_recipe
 from src.document_export import export_documents
 from src.local_storage import read_json
 
 
 class CloudUploadTests(unittest.TestCase):
+    def test_cloud_only_docx_is_staged_separately_from_local_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder).resolve() / "食譜.md"
+            source.write_text("# 測試食譜", encoding="utf-8")
+            with patch("src.cloud_upload.upload_files", return_value=[]) as upload:
+                upload_recipe(source, ("md", "docx"), service=MagicMock(),
+                              progress=lambda _: None, stage_missing=True)
+            staged = source.parent / ".drive" / "documents" / "食譜.docx"
+            self.assertTrue(staged.is_file())
+            self.assertFalse(source.with_suffix(".docx").exists())
+            self.assertEqual(upload.call_args.args[0], [source, staged])
+
+    def test_docx_accepts_jpeg_without_jfif_header(self):
+        from docx import Document
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "step.jpg"
+            Image.new("RGB", (80, 60), "white").save(image)
+            data = image.read_bytes()
+            self.assertEqual(data[2:4], b"\xff\xe0")
+            # 移除 APP0/JFIF 區塊，模擬 FFmpeg 產生的有效 JPEG。
+            length = int.from_bytes(data[4:6], "big")
+            image.write_bytes(data[:2] + data[4 + length:])
+            original = image.read_bytes()
+            source = root / "食譜.md"
+            source.write_text("# 測試食譜\n\n![步驟](step.jpg)", encoding="utf-8")
+            result, = export_documents(source, ("docx",))
+            self.assertEqual(len(Document(result).inline_shapes), 1)
+            self.assertEqual(image.read_bytes(), original)
+
     def test_folders_include_all_pages(self):
         service = MagicMock()
         service.files.return_value.list.return_value.execute.side_effect = [

@@ -5,6 +5,36 @@ import re
 from urllib.parse import urlsplit
 
 from .media import run
+from .environment import find_tool
+
+
+def js_runtime_options():
+    """明確啟用已安裝的 JS runtime，yt-dlp 預設不會啟用 Node。"""
+    for name in ("deno", "node"):
+        executable = find_tool(name)
+        if executable:
+            return ["--js-runtimes", f"{name}:{executable}"]
+    return []
+
+
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".flv"}
+
+
+def downloaded_video(work, printed):
+    """由 yt-dlp 印出的路徑找回影片。
+
+    輸出資料夾含中文時，舊版或非 UTF-8 主控台可能把路徑印成亂碼；
+    檔名固定為 source.<副檔名>，因此只取檔名並在工作資料夾內確認，找不到再掃描。
+    """
+    work = Path(work)
+    candidate = work / Path(printed.strip()).name
+    if candidate.is_file():
+        return candidate.resolve()
+    videos = sorted(path for path in work.glob("source.*")
+                    if path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES)
+    if videos:
+        return videos[0].resolve()
+    raise ValueError(f"yt-dlp 回報已下載，但在工作資料夾找不到影片檔：{printed.strip()}")
 
 
 def detect_platform(url):
@@ -21,7 +51,7 @@ def detect_platform(url):
 
 def download(url, work, tools, subtitles="auto"):
     result = run(
-        [tools["yt-dlp"], "--ignore-config", "--no-playlist", "--no-progress",
+        [tools["yt-dlp"], *js_runtime_options(), "--ignore-config", "--encoding", "utf-8", "--no-playlist", "--no-progress",
          "--no-simulate", "--write-description", "--write-info-json",
          "--ffmpeg-location", str(Path(tools["ffmpeg"]).parent),
          "--no-write-subs", "--no-write-auto-subs",
@@ -31,7 +61,7 @@ def download(url, work, tools, subtitles="auto"):
     )
     if not result:
         raise ValueError("未取得影片，請確認公開影片網址。")
-    video = (work / result.splitlines()[-1]).resolve()
+    video = downloaded_video(work, result.splitlines()[-1])
     if subtitles in {"original", "auto"}:
         download_captions(url, work, tools)
     return video
@@ -59,7 +89,7 @@ def download_captions(url, work, tools):
     # 避免語言代碼中的正規表示式字元改變 yt-dlp 選取範圍。
     try:
         run(
-            [tools["yt-dlp"], "--ignore-config", "--no-playlist", "--skip-download",
+            [tools["yt-dlp"], *js_runtime_options(), "--ignore-config", "--encoding", "utf-8", "--no-playlist", "--skip-download",
              "--write-subs", "--write-auto-subs", "--sub-langs", re.escape(language),
              "--sub-format", "vtt", "-o", "source.%(ext)s", "--", url],
             folder=work,
@@ -74,6 +104,6 @@ def download_captions(url, work, tools):
 
 def read_metadata(url, work, tools):
     return json.loads(run(
-        [tools["yt-dlp"], "--ignore-config", "--no-playlist", "--skip-download",
+        [tools["yt-dlp"], *js_runtime_options(), "--ignore-config", "--encoding", "utf-8", "--no-playlist", "--skip-download",
          "--dump-single-json", "--", url], folder=work,
     ))

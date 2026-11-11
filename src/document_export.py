@@ -1,5 +1,6 @@
 """將本機食譜 Markdown 及其圖片轉為可上傳的 PDF、DOCX。"""
 import hashlib
+from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
@@ -62,6 +63,7 @@ def recipe_blocks(markdown):
 
 def create_docx(blocks, target):
     from docx import Document
+    from docx.image.exceptions import UnrecognizedImageError
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Cm, Pt, RGBColor
@@ -87,7 +89,15 @@ def create_docx(blocks, target):
             with Image.open(value) as image:
                 width, height = image.size
             scale = min(15 / width, 17 / height)
-            document.add_picture(str(value), width=Cm(width * scale), height=Cm(height * scale))
+            try:
+                document.add_picture(str(value), width=Cm(width * scale), height=Cm(height * scale))
+            except UnrecognizedImageError:
+                # FFmpeg JPEG 可能沒有 JFIF/Exif 標記；轉為記憶體 PNG 供 Word 嵌入。
+                with Image.open(value) as image:
+                    compatible = BytesIO()
+                    image.convert("RGB").save(compatible, format="PNG")
+                compatible.seek(0)
+                document.add_picture(compatible, width=Cm(width * scale), height=Cm(height * scale))
         elif level:
             document.add_paragraph(value, style="Title" if level == 1 else f"Heading {min(level - 1, 3)}")
         else:

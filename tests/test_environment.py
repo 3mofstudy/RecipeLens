@@ -1,4 +1,5 @@
 """離線測試環境與主要流程，從專案根目錄執行 python -m unittest tests.test_environment。"""
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -11,9 +12,22 @@ from src import environment, recipe_lens
 from src.video_download import detect_platform
 from src.youtube_download import has_complete_recipe
 from src.media import get_transcript, speech_settings
+from src.video_download import js_runtime_options
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_project_downloader_wins_over_global_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / "yt-dlp.exe"
+            executable.touch()
+            with patch.object(environment.sys, "executable", str(Path(folder) / "python.exe")), \
+                    patch.object(environment.shutil, "which", return_value="old-global-yt-dlp"):
+                self.assertEqual(environment.find_tool("yt-dlp"), str(executable))
+
+    def test_node_is_explicitly_enabled_when_deno_missing(self):
+        with patch("src.video_download.find_tool", side_effect=lambda name: "C:/node.exe" if name == "node" else None):
+            self.assertEqual(js_runtime_options(), ["--js-runtimes", "node:C:/node.exe"])
+
     def test_speech_language_reaches_recognizer(self):
         expected = {
             "國語": ("small", "zh"),
@@ -44,8 +58,10 @@ class EnvironmentTests(unittest.TestCase):
         tools = environment.find_tools()
         self.assertFalse([name for name in environment.REQUIRED_TOOLS if not tools[name]],
                          "缺少工具，請依 readme.md 安裝。")
-        self.assertTrue(any(tools[name] for name in environment.AI_TOOLS),
-                        "請安裝 Codex CLI 或 Claude Code CLI 其中一種。")
+        # GitHub Actions 打包環境不安裝也不登入 AI CLI。
+        if not os.environ.get("CI"):
+            self.assertTrue(any(tools[name] for name in environment.AI_TOOLS),
+                            "請安裝 Codex CLI 或 Claude Code CLI 其中一種。")
         for name in ("ffmpeg", "ffprobe"):
             result = subprocess.run([tools[name], "-version"], capture_output=True, timeout=15)
             self.assertEqual(result.returncode, 0)

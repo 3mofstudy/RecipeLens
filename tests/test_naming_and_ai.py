@@ -1,4 +1,4 @@
-"""驗證「平台-食譜名」命名、Claude 回應解析與 .md 連同圖片上傳，不呼叫真的 AI 或 Google。"""
+"""驗證「平台-頻道名稱-食譜名稱」命名、Claude 回應解析與 .md 連同圖片上傳，不呼叫真的 AI 或 Google。"""
 import json
 from pathlib import Path
 import tempfile
@@ -17,18 +17,31 @@ RECIPE = {"title": "蔥爆豬肉", "ingredients": [{"name": "豬肉", "amount": 
 
 
 class NamingTests(unittest.TestCase):
+    def test_channel_name_and_fallback(self):
+        self.assertEqual(recipe_stem("YouTube", "高麗菜水煎包", "豫魯小學堂"),
+                         "Youtuber-豫魯小學堂-高麗菜水煎包")
+        self.assertEqual(recipe_stem("Facebook", "蔥爆豬肉", '頻/道:*'),
+                         "Facebook-頻道-蔥爆豬肉")
+        self.assertEqual(recipe_stem("YouTube", "食譜", " /:* "),
+                         "Youtuber-未知頻道-食譜")
+
     def test_platform_prefix(self):
-        self.assertEqual(recipe_stem("Facebook", "蔥爆豬肉"), "FB-蔥爆豬肉")
-        self.assertEqual(recipe_stem("YouTube", "蔥爆豬肉"), "YT-蔥爆豬肉")
+        self.assertEqual(recipe_stem("Facebook", "蔥爆豬肉"), "Facebook-未知頻道-蔥爆豬肉")
+        self.assertEqual(recipe_stem("YouTube", "蔥爆豬肉"), "Youtuber-未知頻道-蔥爆豬肉")
 
     def test_title_is_cleaned_for_windows(self):
-        self.assertEqual(recipe_stem("YouTube", "【阿基師】蔥爆豬肉 #shorts"), "YT-蔥爆豬肉")
-        self.assertEqual(recipe_stem("Facebook", 'a/b:c?"'), "FB-abc")
-        self.assertEqual(recipe_stem("Facebook", ""), "FB-食譜")
+        self.assertEqual(recipe_stem("YouTube", "【阿基師】蔥爆豬肉 #shorts"), "Youtuber-未知頻道-蔥爆豬肉")
+        self.assertEqual(recipe_stem("Facebook", 'a/b:c?"'), "Facebook-未知頻道-abc")
+        self.assertEqual(recipe_stem("Facebook", ""), "Facebook-未知頻道-食譜")
 
     def test_convert_names_file_and_folder_from_ai_title(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
+
+            def download(url, work, tools, mode):
+                (work / "source.info.json").write_text(
+                    json.dumps({"uploader": "料理頻道"}), encoding="utf-8")
+                return root / "video.mp4"
 
             def export(recipe, url, duration, ffmpeg, video, work, destination):
                 destination.mkdir()
@@ -39,24 +52,24 @@ class NamingTests(unittest.TestCase):
             with (
                 patch.object(recipe_lens, "find_tools", return_value={
                     "yt-dlp": "t", "ffmpeg": "t", "ffprobe": "t", "codex": None, "claude": "claude"}),
-                patch.object(recipe_lens, "download_facebook", return_value=root / "video.mp4"),
+                patch.object(recipe_lens, "download_facebook", side_effect=download),
                 patch.object(recipe_lens, "run", return_value="10"),
                 patch.object(recipe_lens, "get_transcript", return_value=""),
                 patch.object(recipe_lens, "interpret", return_value=RECIPE) as ai,
                 patch.object(recipe_lens, "export_recipe", side_effect=export),
                 patch.object(recipe_lens, "export_documents"),
-                patch.object(recipe_lens, "claude_logged_in", return_value=False),
-                patch.object(recipe_lens, "claude_login") as login,
+                patch.object(recipe_lens, "cli_logged_in", return_value=False),
+                patch.object(recipe_lens, "cli_login") as login,
             ):
-                for expected in ("FB-蔥爆豬肉", "FB-蔥爆豬肉-2"):
+                for expected in ("Facebook-料理頻道-蔥爆豬肉", "Facebook-料理頻道-蔥爆豬肉-2"):
                     result = recipe_lens.convert_video(
                         "https://fb.watch/test", root / "out", subtitle_mode="embedded",
                         provider="Claude", progress=lambda text: None)
-                    self.assertEqual(result.name, "FB-蔥爆豬肉.md")
+                    self.assertEqual(result.name, "Facebook-料理頻道-蔥爆豬肉.md")
                     self.assertEqual(result.parent.name, expected)
                 self.assertEqual(ai.call_args.kwargs["provider"], "Claude")
                 self.assertEqual(ai.call_args.args[1], "claude")
-                login.assert_called_with("claude")
+                login.assert_called_with("Claude", "claude")
 
     def test_missing_selected_ai_cli_is_reported(self):
         with (
@@ -64,7 +77,7 @@ class NamingTests(unittest.TestCase):
                 "yt-dlp": "t", "ffmpeg": "t", "ffprobe": "t", "codex": "codex", "claude": None}),
             tempfile.TemporaryDirectory() as folder,
         ):
-            with self.assertRaisesRegex(ValueError, "Claude"):
+            with self.assertRaisesRegex(RuntimeError, "Claude"):
                 recipe_lens.convert_video("https://fb.watch/test", folder, provider="Claude",
                                           progress=lambda text: None)
 
@@ -293,3 +306,215 @@ class PlainSubtitleTests(unittest.TestCase):
             self.assertNotIn("-->", text)
             blocks = [value for kind, value, _ in recipe_blocks(result) if kind == "text"]
             self.assertIn("雞蛋兩顆\n1. 打散", blocks)
+
+
+class CodexModelTests(unittest.TestCase):
+    def test_auto_model_passes_no_model_flag(self):
+        self.assertIsNone(ai_recipe.normalize_model(ai_recipe.AUTO_MODEL))
+        self.assertIsNone(ai_recipe.normalize_model("  "))
+        self.assertEqual(ai_recipe.normalize_model("gpt-6.1-sol"), "gpt-6.1-sol")
+        self.assertNotIn("gpt-5.5", ai_recipe.AI_PROVIDERS["Codex"])
+
+    def test_retired_or_auto_saved_model_becomes_cheapest_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            path.write_text(json.dumps({"models": {"Codex": "gpt-5.5", "Claude": ai_recipe.AUTO_MODEL}}),
+                            encoding="utf-8")
+            models = load_settings(path)["models"]
+        self.assertEqual(models["Codex"], "gpt-6-luna")
+        self.assertEqual(models["Claude"], "claude-haiku-5-5")
+
+    def test_defaults_are_cheapest_and_no_auto_option(self):
+        self.assertEqual(ai_recipe.AI_PROVIDERS["Codex"][0], "gpt-6-luna")
+        self.assertEqual(ai_recipe.AI_PROVIDERS["Claude"][0], "claude-haiku-5-5")
+        for models in ai_recipe.AI_PROVIDERS.values():
+            self.assertNotIn(ai_recipe.AUTO_MODEL, models)
+        with tempfile.TemporaryDirectory() as folder:
+            models = load_settings(Path(folder) / "none.json")["models"]
+        self.assertEqual(models, {"Codex": "gpt-6-luna", "Claude": "claude-haiku-5-5"})
+
+    def test_rejected_model_retries_with_explicit_fallback(self):
+        rejected = ValueError('codex 執行失敗：ERROR: {"status":400,"error":{"message":"The gpt-5.5 model '
+                              'is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}')
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+
+            def fake_run(command, folder, prompt):
+                if "--model" in command:
+                    raise rejected
+                (work / "recipe.json").write_text(json.dumps(RECIPE, ensure_ascii=False), encoding="utf-8")
+                return ""
+            with patch.object(ai_recipe, "run", side_effect=fake_run) as run:
+                recipe = ai_recipe.interpret_codex(work, "codex", "gpt-5.5", "提示", ["frame-00.jpg"])
+        self.assertEqual(recipe["title"], "蔥爆豬肉")
+        self.assertEqual(run.call_count, 2)
+        # 被拒後先沿用 Codex 本身的設定（不帶 --model），即使用者原本可用的模型
+        self.assertNotIn("--model", run.call_args.args[0])
+        self.assertIn("--image=frame-00.jpg", run.call_args.args[0])
+
+    def test_working_cli_default_is_used_when_selected_model_rejected(self):
+        """回歸測試：原本靠 Codex 本身設定（例如 gpt-5.6-sol）可用的電腦，選 luna 被拒後要能恢復。"""
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+
+            def fake_run(command, folder, prompt):
+                if "--model" in command:
+                    raise ValueError("model_not_found: not supported when using Codex with a ChatGPT account")
+                (work / "recipe.json").write_text(json.dumps(RECIPE), encoding="utf-8")
+                return ""
+            with patch.object(ai_recipe, "run", side_effect=fake_run) as run:
+                recipe = ai_recipe.interpret_codex(work, "codex", "gpt-6-luna", "提示", [])
+        self.assertEqual(recipe["title"], "蔥爆豬肉")
+        self.assertEqual(run.call_count, 2)
+
+    def test_auto_can_fail_from_global_config_then_fall_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+
+            def fake_run(command, folder, prompt):
+                if "--model" not in command:
+                    raise ValueError('model_not_found: gpt-6.1-sol not supported')
+                (work / "recipe.json").write_text(json.dumps(RECIPE), encoding="utf-8")
+                return ""
+            with patch.object(ai_recipe, "run", side_effect=fake_run) as run:
+                recipe = ai_recipe.interpret_codex(work, "codex", None, "提示", [])
+        self.assertEqual(recipe["title"], "蔥爆豬肉")
+        self.assertEqual(run.call_count, 2)
+
+    def test_rejected_fallback_is_bounded_and_explains_model_problem(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(ai_recipe, "run", side_effect=ValueError("model_not_found")) as run:
+            with self.assertRaises(ai_recipe.CodexPlanError):
+                ai_recipe.interpret_codex(Path(folder), "codex", None, "提示", [])
+        # CLI 預設 → gpt-5.6-sol → gpt-6-luna → gpt-6.1-sol，各試一次
+        self.assertEqual(run.call_count, 4)
+
+    def test_luna_rejected_means_plan_not_allowed(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(ai_recipe, "run", side_effect=ValueError(
+                    "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account. model_not_found")):
+            with self.assertRaises(ai_recipe.CodexPlanError) as caught:
+                ai_recipe.interpret_codex(Path(folder), "codex", "gpt-6-luna", "提示", [])
+        self.assertIn("版本太舊", str(caught.exception))
+
+    def test_free_plan_falls_back_to_luna(self):
+        """免費／Go 方案只能用 gpt-6-luna：被拒時依序改試，最後以 luna 成功。"""
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            models = []
+
+            def fake_run(command, folder, prompt):
+                models.append(command[command.index("--model") + 1] if "--model" in command else None)
+                if models[-1] != "gpt-6-luna":
+                    raise ValueError("ERROR: The model is not supported when using Codex with a ChatGPT account.")
+                (work / "recipe.json").write_text(json.dumps(RECIPE), encoding="utf-8")
+                return ""
+            with patch.object(ai_recipe, "run", side_effect=fake_run):
+                recipe = ai_recipe.interpret_codex(work, "codex", "gpt-5.6-sol", "提示", [])
+        self.assertEqual(recipe["title"], "蔥爆豬肉")
+        self.assertEqual(models, ["gpt-5.6-sol", None, "gpt-6-luna"])
+
+    def test_luna_selected_is_not_retried_with_itself(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(ai_recipe, "run", side_effect=ValueError("model_not_found")) as run:
+            with self.assertRaises(ValueError):
+                ai_recipe.interpret_codex(Path(folder), "codex", "gpt-6-luna", "提示", [])
+        self.assertEqual(run.call_count, 4)  # luna → CLI 預設 → gpt-5.6-sol → gpt-6.1-sol，不重複試 luna
+
+    def test_other_codex_errors_are_not_retried(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(ai_recipe, "run", side_effect=ValueError("codex 執行失敗：網路錯誤")) as run:
+            with self.assertRaisesRegex(ValueError, "網路錯誤"):
+                ai_recipe.interpret_codex(Path(folder), "codex", "gpt-6.1-sol", "提示", [])
+        self.assertEqual(run.call_count, 1)
+
+
+class ModelChoiceTests(unittest.TestCase):
+    @staticmethod
+    def write_auth(folder, plan):
+        import base64
+        claims = {"https://api.openai.com/auth": {"chatgpt_plan_type": plan}}
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        Path(folder, "auth.json").write_text(
+            json.dumps({"tokens": {"id_token": f"header.{payload}.signature", "access_token": "x"}}),
+            encoding="utf-8")
+
+    def test_plan_is_read_from_codex_auth(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.write_auth(folder, "free")
+            self.assertEqual(ai_recipe.codex_plan(folder), "free")
+            self.write_auth(folder, "Pro")
+            self.assertEqual(ai_recipe.codex_plan(folder), "pro")
+
+    def test_plan_unknown_when_missing_or_api_key(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertIsNone(ai_recipe.codex_plan(folder))
+            Path(folder, "auth.json").write_text('{"OPENAI_API_KEY": "sk-test", "tokens": null}', encoding="utf-8")
+            self.assertIsNone(ai_recipe.codex_plan(folder))
+
+    def test_free_and_go_only_get_luna(self):
+        for plan in ("free", "go", "FREE"):
+            self.assertEqual(ai_recipe.model_choices("Codex", plan), ("gpt-6-luna",))
+        self.assertIn("gpt-6.1-sol", ai_recipe.model_choices("Codex", "plus"))
+        self.assertEqual(ai_recipe.model_choices("Codex", None)[0], "gpt-6-luna")
+        self.assertEqual(ai_recipe.model_choices("Claude", "free"), ai_recipe.AI_PROVIDERS["Claude"])
+
+    def test_labels_have_notes_and_strip_back(self):
+        label = ai_recipe.model_label("gpt-6-luna")
+        self.assertTrue(label.startswith("gpt-6-luna(") and label.endswith(")"))
+        self.assertEqual(ai_recipe.model_id(label), "gpt-6-luna")
+        self.assertEqual(ai_recipe.model_id("gpt-6.1-sol（較精準）"), "gpt-6.1-sol")
+        self.assertEqual(ai_recipe.model_id(ai_recipe.AUTO_MODEL), ai_recipe.AUTO_MODEL)
+        self.assertIsNone(ai_recipe.normalize_model(ai_recipe.AUTO_MODEL))
+        self.assertEqual(ai_recipe.normalize_model(label), "gpt-6-luna")
+        self.assertEqual(ai_recipe.model_id("my-custom-model"), "my-custom-model")
+
+
+class CodexLoginTests(unittest.TestCase):
+    def test_status_and_login_commands_run_hidden(self):
+        done = MagicMock(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+        with patch.object(ai_recipe.subprocess, "run", return_value=done) as run:
+            self.assertTrue(ai_recipe.codex_logged_in("codex"))
+            ai_recipe.codex_login("codex")
+        self.assertEqual(run.call_args_list[0].args[0], ["codex", "login", "status"])
+        self.assertEqual(run.call_args_list[1].args[0], ["codex", "login"])
+        for call in run.call_args_list:
+            self.assertIn("creationflags", call.kwargs)
+        done.returncode = 1
+        with patch.object(ai_recipe.subprocess, "run", return_value=done):
+            self.assertFalse(ai_recipe.codex_logged_in("codex"))
+
+    def test_unknown_status_does_not_force_login(self):
+        with patch.object(ai_recipe.subprocess, "run", side_effect=OSError("missing")):
+            self.assertIsNone(ai_recipe.cli_logged_in("Codex", "codex"))
+            self.assertIsNone(ai_recipe.cli_logged_in("Claude", "claude"))
+
+    def test_convert_logs_in_codex_first_when_logged_out(self):
+        with patch.object(recipe_lens, "find_tools", return_value={
+                "yt-dlp": "t", "ffmpeg": "t", "ffprobe": "t", "codex": "codex", "claude": None}), \
+                patch.object(recipe_lens, "cli_logged_in", return_value=False), \
+                patch.object(recipe_lens, "cli_login", side_effect=ValueError("stop")) as login, \
+                tempfile.TemporaryDirectory() as folder:
+            messages = []
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                recipe_lens.convert_video("https://fb.watch/test", folder, progress=messages.append)
+        login.assert_called_once_with("Codex", "codex")
+        self.assertTrue(any("ChatGPT 帳號" in message for message in messages))
+
+    def test_expired_codex_login_relogs_and_retries(self):
+        expired = ValueError("codex 執行失敗：ERROR: 401 Unauthorized, please run codex login")
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            calls = []
+
+            def fake_run(command, folder, prompt):
+                calls.append(command)
+                if len(calls) == 1:
+                    raise expired
+                (work / "recipe.json").write_text(json.dumps(RECIPE, ensure_ascii=False), encoding="utf-8")
+                return ""
+            with patch.object(ai_recipe, "run", side_effect=fake_run), \
+                    patch.object(ai_recipe, "codex_login") as login:
+                recipe = ai_recipe.interpret_codex(work, "codex", None, "提示", [])
+        login.assert_called_once_with("codex")
+        self.assertEqual(recipe["title"], "蔥爆豬肉")
