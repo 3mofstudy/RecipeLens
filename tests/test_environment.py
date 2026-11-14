@@ -68,7 +68,9 @@ class EnvironmentTests(unittest.TestCase):
 
     def test_ffmpeg_without_inherited_path(self):
         with tempfile.TemporaryDirectory() as folder:
-            executable = Path(folder) / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+            # find_tool 會 resolve 路徑；GitHub Actions 的 TEMP 是 8.3 短檔名（RUNNER~1），先展開成完整路徑再比對。
+            folder = Path(folder).resolve()
+            executable = folder / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"test")
             with (
