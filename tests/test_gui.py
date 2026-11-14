@@ -409,7 +409,7 @@ class GuiTests(unittest.TestCase):
             error.assert_called_once()
             thread.assert_not_called()
 
-    FOLDER = {"id": "f09", "name": "09.我的食譜", "path": ["我的雲端硬碟", "09.我的食譜"]}
+    FOLDER = {"id": "f09", "name": "09.我的食譜", "path": ["食影筆記", "09.我的食譜"], "app_root": True}
 
     def test_completed_recipe_shows_preview_and_local_path(self):
         self.assertEqual(self.app.result_path.text(), "")
@@ -582,11 +582,11 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(self.app, "new_folder"))
         self.assertIn("尚未選擇", self.app.drive_location.text())
         self.app.set_drive_folder({"id": "f09", "name": "09.我的食譜", "path": [
-            {"id": "root", "name": "我的雲端硬碟"}, {"id": "f09", "name": "09.我的食譜"}]})
-        self.assertEqual(self.app.drive_location.text(), "我的雲端硬碟 > 09.我的食譜")
+            {"id": "root", "name": "食影筆記"}, {"id": "f09", "name": "09.我的食譜"}]})
+        self.assertEqual(self.app.drive_location.text(), "食影筆記 > 09.我的食譜")
         self.assertEqual(load_settings(self.settings_file)["drive_folder"], self.FOLDER)
         reopened = RecipeLensApp(settings_file=self.settings_file)
-        self.assertEqual(reopened.drive_location.text(), "我的雲端硬碟 > 09.我的食譜")
+        self.assertEqual(reopened.drive_location.text(), "食影筆記 > 09.我的食譜")
         reopened.close()
 
     def test_pick_drive_folder_from_settings(self):
@@ -594,12 +594,12 @@ class GuiTests(unittest.TestCase):
         with patch("src.gui.google_service", return_value=service):
             self.app.connect_worker("settings")
         with patch("src.gui.choose_folder", return_value={"id": "f09", "name": "09.我的食譜", "path": [
-                {"id": "root", "name": "我的雲端硬碟"}, {"id": "f09", "name": "09.我的食譜"}]}) as choose:
+                {"id": "root", "name": "食影筆記"}, {"id": "f09", "name": "09.我的食譜"}]}) as choose:
             self.app.busy = True
             self.app.poll()
             choose.assert_called_once()
         self.assertFalse(self.app.busy)
-        self.assertEqual(self.app.drive_location.text(), "我的雲端硬碟 > 09.我的食譜")
+        self.assertEqual(self.app.drive_location.text(), "食影筆記 > 09.我的食譜")
 
     def test_start_snapshots_main_screen_settings(self):
         self.app.url.setText("https://youtu.be/test")
@@ -615,11 +615,11 @@ class GuiTests(unittest.TestCase):
 
     def test_change_folder_then_upload_and_remember(self):
         payload = {"source": self.recipe, "formats": ("pdf",), "change": True}
-        picked = {"id": "new", "name": "湯品", "path": [{"id": "r", "name": "我的雲端硬碟"}, {"id": "new", "name": "湯品"}]}
+        picked = {"id": "new", "name": "湯品", "path": [{"id": "r", "name": "食影筆記"}, {"id": "new", "name": "湯品"}]}
         with patch("src.gui.choose_folder", return_value=picked), patch("src.gui.Thread") as thread:
             self.app.drive_ready("upload", payload, object())
             self.assertEqual(thread.call_args.kwargs["args"][3]["id"], "new")
-        self.assertEqual(load_settings(self.settings_file)["drive_folder"]["path"], ["我的雲端硬碟", "湯品"])
+        self.assertEqual(load_settings(self.settings_file)["drive_folder"]["path"], ["食影筆記", "湯品"])
 
     def test_upload_worker_and_success_message(self):
         service = object()
@@ -631,7 +631,7 @@ class GuiTests(unittest.TestCase):
         with patch("src.gui.ask_yes_no", return_value=True) as ask, patch("src.gui.webbrowser.open") as browser:
             self.app.poll()
             self.assertEqual(ask.call_args.args[0], "上傳成功")
-            self.assertIn("我的雲端硬碟 > 09.我的食譜 > 食譜", ask.call_args.args[1])
+            self.assertIn("食影筆記 > 09.我的食譜 > 食譜", ask.call_args.args[1])
             browser.assert_called_once_with("https://drive.google.com/drive/folders/rf")
 
     def test_done_uploads_to_preselected_folder_without_asking(self):
@@ -654,7 +654,7 @@ class GuiTests(unittest.TestCase):
         with patch("src.gui.google_service", return_value=service):
             self.app.connect_worker("settings")
         with patch("src.gui.choose_folder", return_value={"id": "f09", "name": "09.我的食譜", "path": [
-                {"id": "root", "name": "我的雲端硬碟"}, {"id": "f09", "name": "09.我的食譜"}]}), \
+                {"id": "root", "name": "食影筆記"}, {"id": "f09", "name": "09.我的食譜"}]}), \
                 patch.object(self.app, "worker") as worker, patch("src.gui.convert_video") as convert:
             self.app.busy = True
             self.app.poll()
@@ -692,6 +692,13 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(load_settings(self.settings_file)["auto_upload"])
         self.settings_file.write_text('{"ask_upload": true}', encoding="utf-8")
         self.assertFalse(load_settings(self.settings_file)["auto_upload"])  # 沒選過資料夾不自動上傳
+
+    def test_folder_chosen_with_old_drive_scope_is_not_reused(self):
+        """改用 drive.file 後，舊版選的資料夾無法上傳，需在「食影筆記」資料夾內重新選擇。"""
+        import json
+        old = {"id": "f09", "name": "09.我的食譜", "path": ["我的雲端硬碟", "09.我的食譜"]}
+        self.settings_file.write_text(json.dumps({"auto_upload": True, "drive_folder": old}), encoding="utf-8")
+        self.assertIsNone(load_settings(self.settings_file)["drive_folder"])
 
 
 

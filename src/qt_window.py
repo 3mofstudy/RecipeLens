@@ -125,7 +125,7 @@ class WindowUi:
         head.addWidget(icon)
         title = QVBoxLayout()
         title.setSpacing(1)
-        title.addWidget(label("RecipeLens", "brand"))
+        title.addWidget(label("食影筆記", "brand"))
         title.addWidget(label("把喜歡的料理影片，收藏成自己的食譜。", "subtitle"))
         head.addLayout(title)
         head.addStretch()
@@ -146,7 +146,7 @@ class WindowUi:
         inputs.setContentsMargins(26, 20, 2, 20)
         inputs.setSpacing(12)
         inputs.addWidget(label("開始一份新食譜", "heading"))
-        inputs.addWidget(label("貼上公開影片網址，剩下的交給 RecipeLens。", "muted", True))
+        inputs.addWidget(label("貼上公開影片網址，剩下的交給食影筆記。", "muted", True))
         source, layout = card("01　影片來源")
         self.url = QLineEdit()
         self.url.setPlaceholderText("YouTube 或 Facebook 影片網址")
@@ -351,7 +351,7 @@ class LoginWaitDialog(QDialog):
         layout.addWidget(label("請在瀏覽器完成登入", "heading"))
         layout.addWidget(label(f"已開啟瀏覽器，請用{account}登入並按「允許」，完成後這個視窗會自動關閉。", wrap=True))
         layout.addWidget(label(f"想換帳號：先在瀏覽器的 {site} 網站登出，或按「取消登入」後再重新登入。\n"
-                               "關閉瀏覽器分頁不會通知 RecipeLens；要放棄登入請按「取消登入」。", "muted", True))
+                               "關閉瀏覽器分頁不會通知食影筆記；要放棄登入請按「取消登入」。", "muted", True))
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(button("取消登入", self.reject))
@@ -365,7 +365,7 @@ def show_setup_check(parent, status, gate=False):
     回傳 "enter"、"recheck"、"quit"（啟動檢查）或 "close"（主畫面內手動檢查）。
     """
     dialog = QDialog(parent)
-    dialog.setWindowTitle("RecipeLens · 環境檢查")
+    dialog.setWindowTitle("食影筆記 · 環境檢查")
     if parent is None:
         dialog.setWindowIcon(QIcon(str(ASSETS / "recipelens.ico")))
     dialog.setMinimumWidth(600)

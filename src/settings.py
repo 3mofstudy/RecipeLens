@@ -19,7 +19,7 @@ def default_settings():
         "auto_upload": False,   # 按「開始下載」後一次跑完：轉換完成直接上傳到事先選好的雲端資料夾
         "formats": list(UPLOAD_FORMATS),
         "local_formats": list(UPLOAD_FORMATS),
-        "drive_folder": None,   # {"id", "name", "path": ["我的雲端硬碟", ...]}
+        "drive_folder": None,   # {"id", "name", "path": ["食影筆記", ...], "app_root": True}
         "setup_done": False,    # 首次啟動已通過環境檢查；之後只在一種 AI 都找不到時再檢查
     }
 
@@ -55,10 +55,12 @@ def load_settings(path=SETTINGS_FILE):
     if isinstance(saved.get("setup_done"), bool):
         settings["setup_done"] = saved["setup_done"]
     folder = saved.get("drive_folder")
+    # 改用 drive.file 權限後，舊版選的資料夾不是 App 建立的、已無法上傳，不沿用（沒有 app_root 標記）。
     if (isinstance(folder, dict) and isinstance(folder.get("id"), str) and folder["id"]
             and isinstance(folder.get("name"), str) and isinstance(folder.get("path"), list)
-            and all(isinstance(part, str) for part in folder["path"])):
-        settings["drive_folder"] = {"id": folder["id"], "name": folder["name"], "path": folder["path"]}
+            and all(isinstance(part, str) for part in folder["path"]) and folder.get("app_root") is True):
+        settings["drive_folder"] = {"id": folder["id"], "name": folder["name"], "path": folder["path"],
+                                    "app_root": True}
     # 上傳改為事先選好資料夾、按「開始下載」一次跑完。舊版的 upload_after 不沿用；
     # 舊版勾選「轉換後詢問上傳」且已選過雲端資料夾者，沿用為自動上傳。
     if isinstance(saved.get("auto_upload"), bool):

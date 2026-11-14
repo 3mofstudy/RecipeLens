@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QInputDialog, QLineEdit,
     QStyle, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 from . import drive_browser as api
+from .app_paths import APP_NAME
 from .qt_window import button, label, show_error
 
 
@@ -23,7 +24,8 @@ class DriveFolderDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(label("選擇雲端資料夾", "heading"))
-        layout.addWidget(label("雙擊進入資料夾；也可以直接使用目前位置。", "muted", True))
+        layout.addWidget(label(f"食譜都存放在雲端硬碟的「{APP_NAME}」資料夾內。雙擊進入資料夾；也可以直接使用目前位置。",
+                               "muted", True))
         toolbar = QHBoxLayout()
         self.up_button = button("上一層", self.go_up)
         self.new_button = button("新增資料夾", self.new_folder)
@@ -99,13 +101,14 @@ class DriveFolderDialog(QDialog):
 
     def start(self, start_folder):
         def load():
+            root = api.app_root_folder(self.service)
             try:
                 if not start_folder:
                     raise ValueError
-                path = api.folder_path(self.service, start_folder)
+                path = api.folder_path(self.service, start_folder, root)
             except Exception:
-                root = api.get_folder(self.service, "root")
-                path = [{"id": root["id"], "name": "我的雲端硬碟"}]
+                # 沒有上次位置，或上次位置已刪除、不在根資料夾內：回到 App 根資料夾。
+                path = [{"id": root["id"], "name": root["name"]}]
             return path, api.list_child_folders(self.service, path[-1]["id"])
         self.run_task(load, self.show_folders)
 

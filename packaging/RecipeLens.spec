@@ -20,20 +20,19 @@ version_file.write_text(f"""VSVersionInfo(
   kids=[
     StringFileInfo([StringTable('040404B0', [
       StringStruct('CompanyName', '3mofstudy'),
-      StringStruct('FileDescription', 'RecipeLens 料理影片轉食譜'),
+      StringStruct('FileDescription', '食影筆記 料理影片轉食譜'),
       StringStruct('FileVersion', '{version}'),
       StringStruct('InternalName', 'RecipeLens'),
       StringStruct('LegalCopyright', '© 3mofstudy'),
       StringStruct('OriginalFilename', 'RecipeLens.exe'),
-      StringStruct('ProductName', 'RecipeLens'),
+      StringStruct('ProductName', '食影筆記'),
       StringStruct('ProductVersion', '{version}')])]),
     VarFileInfo([VarStruct('Translation', [0x0404, 1200])])
   ]
 )
 """, encoding="utf-8")
 
-datas = [(str(root / "assets"), "assets"),
-         (str(root / "src" / "picker_page.html"), "src")]
+datas = [(str(root / "assets"), "assets")]
 # Google 桌面 OAuth 用戶端：CI 由 Secret 寫入 data/；本機打包可沿用 config/ 內已匯入的檔案。
 for client in (root / "data" / "google_client.json", root / "config" / "google_client.json"):
     if client.is_file():

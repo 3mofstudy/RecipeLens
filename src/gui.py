@@ -50,7 +50,7 @@ class RecipeLensApp(QMainWindow, WindowUi):
         self.job_provider = self.active_provider
         self.drive_folder = settings['drive_folder']
         self.drive_service = None
-        self.setWindowTitle('RecipeLens · 影片變食譜')
+        self.setWindowTitle('食影筆記 · 影片變食譜')
         self.setWindowIcon(QIcon(str(ASSETS / 'recipelens.ico')))
         self.resize(1220, 860)
         self.setMinimumSize(980, 680)
@@ -261,7 +261,7 @@ class RecipeLensApp(QMainWindow, WindowUi):
         if self.cancel_event.is_set():
             # 已要求中止但仍在等候：第二次按下提供強制結束
             if ask_yes_no("強制結束", "目前步驟無法立即停止（例如正在下載語音模型或等候登入）。\n"
-                          "要強制結束 RecipeLens 嗎？已產生的本機檔案會保留，未完成的步驟會中斷。",
+                          "要強制結束食影筆記嗎？已產生的本機檔案會保留，未完成的步驟會中斷。",
                           parent=self, yes_text="強制結束", no_text="繼續等候"):
                 self.force_quit()
             return
@@ -278,7 +278,7 @@ class RecipeLensApp(QMainWindow, WindowUi):
         if self.busy and self.cancel_event.is_set():
             self.stop_button.setEnabled(True)
             self.stop_button.setText("強制結束")
-            self.status.setText("目前步驟無法立即停止。可繼續等候，或按右上角「強制結束」關閉 RecipeLens。")
+            self.status.setText("目前步驟無法立即停止。可繼續等候，或按右上角「強制結束」關閉食影筆記。")
 
     def force_quit(self):
         """終止外部工具並直接結束程式；用於中止後仍卡住、或處理中要關閉視窗。"""
@@ -351,7 +351,7 @@ class RecipeLensApp(QMainWindow, WindowUi):
     def closeEvent(self, event):
         if self.busy:
             event.ignore()
-            if ask_yes_no('仍在處理', '要中止並關閉 RecipeLens 嗎？\n已產生的本機檔案會保留，未完成的步驟會中斷。',
+            if ask_yes_no('仍在處理', '要中止並關閉食影筆記嗎？\n已產生的本機檔案會保留，未完成的步驟會中斷。',
                           parent=self, yes_text='中止並關閉', no_text='繼續處理'):
                 self.cancel_event.set()
                 self.force_quit()
@@ -416,7 +416,7 @@ class RecipeLensApp(QMainWindow, WindowUi):
             if self.upload_after.isChecked():
                 if not self.drive_folder:
                     raise ValueError("已勾選「轉換完成後上傳到 Google Drive」，請先在「進階設定」按「選擇」"
-                                     "指定雲端資料夾，或取消勾選只保留在本機。")
+                                     "指定雲端資料夾（位於雲端硬碟的「食影筆記」資料夾內），或取消勾選只保留在本機。")
                 if not formats:
                     raise ValueError("請在「進階設定」勾選至少一種上傳格式，或取消勾選上傳。")
         except ValueError as error:
@@ -557,7 +557,8 @@ class RecipeLensApp(QMainWindow, WindowUi):
     def set_drive_folder(self, folder):
         """記住選定的雲端資料夾並保存為預設值。"""
         names = [part["name"] if isinstance(part, dict) else part for part in folder.get("path", [])]
-        self.drive_folder = {"id": folder["id"], "name": folder["name"], "path": names or [folder["name"]]}
+        self.drive_folder = {"id": folder["id"], "name": folder["name"], "path": names or [folder["name"]],
+                             "app_root": True}
         self.drive_location.setText(format_location(self.drive_folder))
         try:
             save_settings(self.current_settings(), self.settings_file)
@@ -758,7 +759,8 @@ def main():
         except (AttributeError, OSError):
             pass
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName('RecipeLens')
+    app.setApplicationName('RecipeLens')  # 內部識別名稱維持英文
+    app.setApplicationDisplayName('食影筆記')
     apply_style(app)
     if not setup_gate():
         return 0

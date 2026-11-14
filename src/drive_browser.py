@@ -1,9 +1,7 @@
-"""類似檔案總管的 Google 雲端硬碟資料夾選擇視窗。"""
+"""類似檔案總管的 Google 雲端硬碟資料夾選擇視窗，範圍限於 App 建立的根資料夾。"""
 
-from .cloud_upload import CONFIG, validate_name
+from .cloud_upload import CONFIG, FOLDER_MIME, app_root_folder, validate_name
 from .local_storage import read_json, write_json
-
-FOLDER_MIME = "application/vnd.google-apps.folder"
 LAST_FOLDER_FILE = CONFIG / "last_drive_folder.json"
 
 
@@ -37,22 +35,24 @@ def create_folder(service, parent_id, name):
     ).execute()
 
 
-def folder_path(service, folder_id):
-    """回傳從「我的雲端硬碟」到指定資料夾的 [{id,name}, ...]。"""
-    root = get_folder(service, "root")
+def folder_path(service, folder_id, root):
+    """回傳從 App 根資料夾到指定資料夾的 [{id,name}, ...]。
+
+    drive.file 看不到根資料夾以外的上層，不在根資料夾內就引發 ValueError，由呼叫端改回根資料夾。
+    """
     chain = []
     current = get_folder(service, folder_id)
-    while current["id"] != root["id"]:
+    for _ in range(100):  # 防止異常的循環上層
         if current.get("trashed") or current.get("mimeType") != FOLDER_MIME:
             raise ValueError("資料夾已不存在。")
         chain.append({"id": current["id"], "name": current["name"]})
+        if current["id"] == root["id"]:
+            return list(reversed(chain))
         parents = current.get("parents") or []
-        if not parents:  # 共用給我的資料夾，沒有可存取的上層
+        if not parents:
             break
         current = get_folder(service, parents[0])
-    else:
-        chain.append({"id": root["id"], "name": "我的雲端硬碟"})
-    return list(reversed(chain))
+    raise ValueError(f"資料夾不在「{root['name']}」內。")
 
 
 from .qt_drive_dialog import DriveFolderDialog

@@ -12,5 +12,7 @@ data/client_secret_*.json
 data/oauth.txt
 # 錯誤回報接收端網址與金鑰
 data/report_endpoint.json
+# Claude Code 本機設定
+.claude/settings.local.json
 # 本機備份
 _backup_*/

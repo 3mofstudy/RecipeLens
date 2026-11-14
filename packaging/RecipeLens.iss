@@ -18,19 +18,20 @@
 [Setup]
 ; AppId 固定不變，Windows 才會把新版視為同一個程式並直接升級。
 AppId={{9196EBBB-F7E7-499E-B9EF-755DEA63A58B}
-AppName=RecipeLens
+; 顯示名稱為「食影筆記」；安裝資料夾與 RecipeLens.exe 維持英文，升級時路徑不變。
+AppName=食影筆記
 AppVersion={#AppVersion}
-AppVerName=RecipeLens {#AppVersion}
+AppVerName=食影筆記 {#AppVersion}
 AppPublisher=3mofstudy
-AppPublisherURL=https://3mofstudy.github.io/RecipeLens
+AppPublisherURL=https://3mofstudy.app/recipelens/
 AppSupportURL=https://github.com/3mofstudy/RecipeLens/issues
 AppUpdatesURL=https://github.com/3mofstudy/RecipeLens/releases
 AppCopyright=© 3mofstudy
 VersionInfoVersion={#AppVersion}
-VersionInfoProductName=RecipeLens
-VersionInfoDescription=RecipeLens 安裝程式
+VersionInfoProductName=食影筆記
+VersionInfoDescription=食影筆記 安裝程式
 DefaultDirName={autopf}\RecipeLens
-DefaultGroupName=RecipeLens
+DefaultGroupName=食影筆記
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -41,7 +42,7 @@ OutputDir={#OutputDir}
 OutputBaseFilename=RecipeLens-Setup-{#AppVersion}
 SetupIconFile=..\assets\icons\recipelens.ico
 UninstallDisplayIcon={app}\RecipeLens.exe
-UninstallDisplayName=RecipeLens
+UninstallDisplayName=食影筆記
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
@@ -59,13 +60,16 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; 升級前清除舊版的程式套件與工具，避免新舊檔案混用。使用者設定與食譜不在這裡，不受影響。
 Type: filesandordirs; Name: "{app}\_internal"
 Type: filesandordirs; Name: "{app}\tools"
+; 舊版以英文名稱建立的捷徑，改名後移除以免重複。
+Type: files; Name: "{autoprograms}\RecipeLens.lnk"
+Type: files; Name: "{autodesktop}\RecipeLens.lnk"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\RecipeLens"; Filename: "{app}\RecipeLens.exe"; AppUserModelID: "RecipeLens.App"
-Name: "{autodesktop}\RecipeLens"; Filename: "{app}\RecipeLens.exe"; AppUserModelID: "RecipeLens.App"; Tasks: desktopicon
+Name: "{autoprograms}\食影筆記"; Filename: "{app}\RecipeLens.exe"; AppUserModelID: "RecipeLens.App"
+Name: "{autodesktop}\食影筆記"; Filename: "{app}\RecipeLens.exe"; AppUserModelID: "RecipeLens.App"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\RecipeLens.exe"; Description: "{cm:LaunchProgram,RecipeLens}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\RecipeLens.exe"; Description: "{cm:LaunchProgram,食影筆記}"; Flags: nowait postinstall skipifsilent

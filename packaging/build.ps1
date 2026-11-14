@@ -123,7 +123,7 @@ Invoke-Native (Join-Path $app "tools\ffmpeg\bin\ffmpeg.exe") @("-hide_banner", "
 Invoke-Native (Join-Path $app "tools\ffmpeg\bin\ffprobe.exe") @("-hide_banner", "-version") | Select-Object -First 1
 Write-Host ("yt-dlp " + (Invoke-Native (Join-Path $app "tools\yt-dlp.exe") @("--version")))
 Invoke-Native (Join-Path $app "tools\deno.exe") @("--version") | Select-Object -First 1
-foreach ($path in "RecipeLens.exe", "_internal\assets\icons\recipelens.ico", "_internal\src\picker_page.html") {
+foreach ($path in "RecipeLens.exe", "_internal\assets\icons\recipelens.ico") {
     if (-not (Test-Path (Join-Path $app $path))) { throw "打包內容缺少 $path" }
 }
 if (-not (Test-Path (Join-Path $app "_internal\data\google_client.json"))) {

@@ -201,7 +201,7 @@ def interpret_codex(work, codex, model, prompt, frames):
                         "1. 這台電腦的 Codex 版本太舊，還不認得新模型：請開啟 ChatGPT 桌面版讓它更新，"
                         "或在 PowerShell 執行 codex --version 檢查。\n"
                         "2. 帳號方案尚未開放：免費帳號的 Codex 由 OpenAI 陸續開放，部分帳號可能還不能用。\n"
-                        "可改用 Claude（需 Claude Pro 以上）。這不是 RecipeLens 的錯誤，已產生的檔案都會保留。\n"
+                        "可改用 Claude（需 Claude Pro 以上）。這不是食影筆記的錯誤，已產生的檔案都會保留。\n"
                         + str(error)
                     ) from error
                 if not remaining:

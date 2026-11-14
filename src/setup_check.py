@@ -22,14 +22,14 @@ INSTALL_GUIDES = {
         "免費帳號可使用 gpt-6-luna（OpenAI 陸續開放中，少數帳號可能還不能用）；付費方案模型較多、額度較高。",
         "https://apps.microsoft.com/detail/9PLM9XGG6VKS",
         "winget install --id 9PLM9XGG6VKS -s msstore",
-        "安裝後開啟 ChatGPT，登入後切換到「Codex」一次，RecipeLens 才找得到它。",
+        "安裝後開啟 ChatGPT，登入後切換到「Codex」一次，食影筆記才找得到它。",
     ),
     "Claude": InstallGuide(
         "Claude", "Claude 桌面版（Claude Code）",
         "需要 Claude Pro 以上的付費方案；免費帳號不含 Claude Code，無法用來判讀食譜。",
         "https://claude.com/download",
         "winget install Anthropic.Claude",
-        "安裝後開啟 Claude，登入後點左側「Code」分頁一次，等它下載完成，RecipeLens 才找得到它。",
+        "安裝後開啟 Claude，登入後點左側「Code」分頁一次，等它下載完成，食影筆記才找得到它。",
     ),
 }
 
@@ -50,7 +50,7 @@ def any_installed(status):
 def setup_summary(status):
     """環境檢查畫面的開頭說明。"""
     if not any_installed(status):
-        return ("RecipeLens 要用 AI 桌面版判讀影片、整理食譜。請至少安裝下列其中一種，安裝完成後按「重新檢查」。\n"
+        return ("食影筆記要用 AI 桌面版判讀影片、整理食譜。請至少安裝下列其中一種，安裝完成後按「重新檢查」。\n"
                 "沒有付費方案的話，建議安裝 ChatGPT 桌面版。")
     installed = "、".join(INSTALL_GUIDES[p].name for p in INSTALL_GUIDES if status.get(p))
     if missing_providers(status):

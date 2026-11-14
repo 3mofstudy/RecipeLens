@@ -9,13 +9,18 @@ from filelock import FileLock
 
 from .document_export import export_documents
 from .local_storage import read_json, write_json
-from .app_paths import DATA_ROOT, RESOURCE_ROOT
+from .app_paths import APP_NAME, DATA_ROOT, RESOURCE_ROOT
 
 CONFIG = DATA_ROOT / "config"
 CLIENT_FILE = CONFIG / "google_client.json"
 TOKEN_FILE = CONFIG / "google_token.json"
-# 自製的雲端資料夾瀏覽視窗需要列出使用者全部資料夾，drive.file 只看得到 App 建立的檔案。
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+# 只要求 drive.file：App 只能存取自己建立的檔案與資料夾，不需經過 Google 受限範圍審查。
+# 因此所有食譜集中放在「我的雲端硬碟」下由 App 建立的根資料夾，雲端資料夾視窗也只瀏覽這裡。
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+FOLDER_MIME = "application/vnd.google-apps.folder"
+APP_ROOT_FILE = CONFIG / "drive_app_root.json"
+# 標記在根資料夾上的 appProperties，本機紀錄遺失時用來找回同一個資料夾。
+APP_ROOT_PROPERTY = "recipelensRoot"
 
 
 def configure_google(client_file):
@@ -39,7 +44,7 @@ def ensure_client_config():
     if bundled.is_file():
         configure_google(bundled)
         return
-    raise ValueError("尚未配置 RecipeLens 的 Google 用戶端。請將開發者下載的桌面 OAuth JSON 放入 data/google_client.json，設定步驟見 readme.md。")
+    raise ValueError(f"尚未配置{APP_NAME}的 Google 用戶端。請將開發者下載的桌面 OAuth JSON 放入 data/google_client.json，設定步驟見 readme.md。")
 
 
 def google_credentials():
@@ -64,7 +69,7 @@ def google_credentials():
         credentials = flow.run_local_server(
             host="127.0.0.1", port=0, timeout_seconds=180,
             authorization_prompt_message="",
-            success_message="Google 授權完成，請關閉這個分頁並返回 RecipeLens。",
+            success_message=f"Google 授權完成，請關閉這個分頁並返回{APP_NAME}。",
         )
     write_json(TOKEN_FILE, json.loads(credentials.to_json()))
     return credentials
@@ -76,13 +81,52 @@ def google_service():
     return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
+def app_root_folder(service):
+    """回傳 App 在「我的雲端硬碟」下的根資料夾 {id, name}，不存在時自動建立。
+
+    先用本機記住的 ID；資料夾被刪除或移到垃圾桶時，改找帶有標記的資料夾，都沒有才新建。
+    使用者在雲端改名或搬移這個資料夾都不影響，App 仍有權限存取。
+    """
+    from googleapiclient.errors import HttpError
+
+    with FileLock(str(APP_ROOT_FILE) + ".lock", timeout=10):
+        try:
+            saved = read_json(APP_ROOT_FILE)
+        except (OSError, ValueError):
+            saved = {}
+        folder_id = saved.get("id") if isinstance(saved, dict) else None
+        remote = None
+        if isinstance(folder_id, str) and folder_id:
+            try:
+                remote = service.files().get(fileId=folder_id, fields="id,name,trashed").execute()
+            except HttpError as error:
+                if error.resp.status not in (403, 404):
+                    raise
+            if remote and remote.get("trashed"):
+                remote = None
+        if remote is None:
+            found = service.files().list(
+                q=(f"appProperties has {{ key='{APP_ROOT_PROPERTY}' and value='1' }} "
+                   f"and mimeType = '{FOLDER_MIME}' and trashed = false"),
+                fields="files(id,name)", pageSize=10, spaces="drive",
+            ).execute().get("files", [])
+            remote = found[0] if found else service.files().create(body={
+                "name": APP_NAME, "mimeType": FOLDER_MIME, "parents": ["root"],
+                "appProperties": {APP_ROOT_PROPERTY: "1"},
+            }, fields="id,name").execute()
+        folder = {"id": remote["id"], "name": remote["name"]}
+        if saved != folder:
+            write_json(APP_ROOT_FILE, folder)
+        return folder
+
+
 def list_folders(service):
-    """僅列出目前 Google 授權允許 RecipeLens 存取的資料夾。"""
+    """僅列出目前 Google 授權允許 App 存取的資料夾（drive.file 下只有 App 建立的）。"""
     folders = []
     page = None
     while True:
         result = service.files().list(
-            q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+            q=f"mimeType = '{FOLDER_MIME}' and trashed = false",
             fields="nextPageToken,files(id,name)", pageSize=100, pageToken=page,
             orderBy="name",
         ).execute()
@@ -272,11 +316,14 @@ def upload_recipe(markdown, formats=("pdf",), *, service=None, progress=print,
     progress("正在連線至 Google 雲端硬碟，首次使用請完成瀏覽器登入…")
     if service is None:
         service = google_service()
+    if parent_id in (None, "root"):
+        # drive.file 只能管理 App 建立的資料夾，未指定位置時放進 App 根資料夾。
+        parent_id = app_root_folder(service)["id"]
     result = []
     if new_folder is not None:
         progress(f"正在建立雲端食譜資料夾「{new_folder}」…")
         parent_id = destination_folder(
-            service, parent_id or "root", new_folder, markdown.parent / "drive-folders.json",
+            service, parent_id, new_folder, markdown.parent / "drive-folders.json",
         )
         result.append({"id": parent_id, "name": f"{new_folder}／（食譜資料夾）", "folder": True,
                        "url": f"https://drive.google.com/drive/folders/{parent_id}"})
@@ -284,7 +331,7 @@ def upload_recipe(markdown, formats=("pdf",), *, service=None, progress=print,
     if images:
         progress(f"正在上傳 {len(images)} 張圖片至雲端資料夾「{image_folder}」…")
         folder_id = destination_folder(
-            service, parent_id or "root", image_folder, markdown.parent / "drive-folders.json",
+            service, parent_id, image_folder, markdown.parent / "drive-folders.json",
         )
         upload_files(images, service, journal, parent_id=folder_id)
         images_entry = {"id": folder_id, "name": f"{image_folder}／（{len(images)} 張圖片）",
@@ -303,7 +350,7 @@ def main():
     parser.add_argument("--formats", nargs="+", choices=["md", "pdf", "docx"],
                         help="複選格式，例如 --formats md docx")
     parser.add_argument("--client-secrets", type=Path, help="首次設定的 Google 桌面 OAuth JSON")
-    parser.add_argument("--folder-id", help="雲端父資料夾 ID，省略時使用我的雲端硬碟")
+    parser.add_argument("--folder-id", help=f"雲端父資料夾 ID（須為 App 建立的資料夾），省略時使用「{APP_NAME}」資料夾")
     parser.add_argument("--new-folder", help="在父資料夾內建立的資料夾名稱")
     parser.add_argument("--name", help="雲端檔名，不含副檔名")
     args = parser.parse_args()

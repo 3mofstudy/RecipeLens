@@ -31,7 +31,7 @@ description: 在 RecipeLens 專案撰寫、修改、重構或除錯 Python 程�
   - 下載：`src/video_download.py`、`src/youtube_download.py`、`src/facebook_download.py`、`src/environment.py`
   - 字幕／語音／AI：`src/media.py`、`src/ai_recipe.py`、`src/recipe_lens.py`
   - 文件輸出：`src/recipe_export.py`、`src/document_export.py`、`src/local_storage.py`
-  - 雲端：`src/cloud_upload.py`、`src/drive_browser.py`、`src/google_picker.py`、`src/qt_drive_dialog.py`
+  - 雲端：`src/cloud_upload.py`、`src/drive_browser.py`、`src/qt_drive_dialog.py`
   - 介面：`src/gui.py`（流程協調）、`src/qt_window.py`（版面與預覽）、`src/qt_style.py`（樣式）
   - 設定與路徑：`src/settings.py`、`src/app_paths.py`；取消與復原：`src/cancellation.py`、`src/recovery.py`
 - 核心處理不寫進 GUI；下載器、AI、輸出、上傳維持可獨立呼叫與測試的函數。
@@ -62,5 +62,6 @@ description: 在 RecipeLens 專案撰寫、修改、重構或除錯 Python 程�
 
 ## 6. 收尾
 
-- 功能、設定、依賴或操作方式有變，同步更新 `readme.md`；新增 `.py` 檔要在 `readme.md` 補上對應說明。
+- 功能、設定、依賴或操作方式有變，同步更新 `readme.md`。
+- 新增、移動、改名、移除或變更 `.py` 檔用途時，同步更新 `readme.md` 的「專案目錄與入口」。收尾時比對專案檔案清單，確認每個 `.py`（含測試、測試輔助模組及 `__init__.py`）都在對應路徑的同一行以 `#` 標註繁體中文用途。
 - 簡短回報：改了哪些檔案、為什麼、跑了哪些測試與結果、尚未驗證的項目。

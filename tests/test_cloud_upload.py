@@ -9,6 +9,7 @@ from httplib2 import Response
 from googleapiclient.errors import HttpError
 from PIL import Image
 
+from src import cloud_upload
 from src.cloud_upload import destination_folder, list_folders, upload_files, upload_recipe
 from src.document_export import export_documents
 from src.local_storage import read_json
@@ -19,13 +20,15 @@ class CloudUploadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder).resolve() / "食譜.md"
             source.write_text("# 測試食譜", encoding="utf-8")
-            with patch("src.cloud_upload.upload_files", return_value=[]) as upload:
+            with patch("src.cloud_upload.upload_files", return_value=[]) as upload, \
+                    patch("src.cloud_upload.app_root_folder", return_value={"id": "app-root", "name": "食影筆記"}):
                 upload_recipe(source, ("md", "docx"), service=MagicMock(),
                               progress=lambda _: None, stage_missing=True)
             staged = source.parent / ".drive" / "documents" / "食譜.docx"
             self.assertTrue(staged.is_file())
             self.assertFalse(source.with_suffix(".docx").exists())
             self.assertEqual(upload.call_args.args[0], [source, staged])
+            self.assertEqual(upload.call_args.kwargs["parent_id"], "app-root")
 
     def test_docx_accepts_jpeg_without_jfif_header(self):
         from docx import Document
@@ -158,6 +161,51 @@ class CloudUploadTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in result], ["pdf-id", "docx-id"])
             self.assertEqual(api.generateIds.call_count, 2)
             self.assertEqual(api.create.call_count, 3)
+
+
+class AppRootFolderTests(unittest.TestCase):
+    """drive.file 權限下，所有食譜集中在 App 建立的「食影筆記」根資料夾。"""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.record = Path(self.tmp.name) / "drive_app_root.json"
+        self.patch = patch.object(cloud_upload, "APP_ROOT_FILE", self.record)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_scope_is_drive_file_only(self):
+        self.assertEqual(cloud_upload.SCOPES, ["https://www.googleapis.com/auth/drive.file"])
+
+    def test_creates_marked_root_once_then_reuses_saved_id(self):
+        service = MagicMock()
+        api = service.files.return_value
+        api.list.return_value.execute.return_value = {"files": []}
+        api.create.return_value.execute.return_value = {"id": "app-root", "name": "食影筆記"}
+        self.assertEqual(cloud_upload.app_root_folder(service), {"id": "app-root", "name": "食影筆記"})
+        body = api.create.call_args.kwargs["body"]
+        self.assertEqual((body["name"], body["parents"]), ("食影筆記", ["root"]))
+        self.assertEqual(body["appProperties"], {cloud_upload.APP_ROOT_PROPERTY: "1"})
+        self.assertEqual(read_json(self.record)["id"], "app-root")
+        api.get.return_value.execute.return_value = {"id": "app-root", "name": "我的食譜", "trashed": False}
+        # 使用者在雲端改名也沿用同一個資料夾，不重複建立。
+        self.assertEqual(cloud_upload.app_root_folder(service)["name"], "我的食譜")
+        self.assertEqual(api.create.call_count, 1)
+
+    def test_trashed_or_missing_root_is_found_by_marker_or_recreated(self):
+        service = MagicMock()
+        api = service.files.return_value
+        cloud_upload.write_json(self.record, {"id": "old", "name": "食影筆記"})
+        api.get.return_value.execute.return_value = {"id": "old", "name": "食影筆記", "trashed": True}
+        api.list.return_value.execute.return_value = {"files": [{"id": "marked", "name": "食影筆記"}]}
+        self.assertEqual(cloud_upload.app_root_folder(service)["id"], "marked")
+        api.create.assert_not_called()
+        api.get.return_value.execute.side_effect = HttpError(Response({"status": "404"}), b'{}')
+        api.list.return_value.execute.return_value = {"files": []}
+        api.create.return_value.execute.return_value = {"id": "fresh", "name": "食影筆記"}
+        self.assertEqual(cloud_upload.app_root_folder(service)["id"], "fresh")
+        self.assertEqual(read_json(self.record)["id"], "fresh")
 
 
 if __name__ == "__main__":

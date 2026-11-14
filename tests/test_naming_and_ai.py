@@ -238,10 +238,12 @@ class MarkdownImageUploadTests(unittest.TestCase):
             source.write_text("# 食譜", encoding="utf-8")
             with patch.object(cloud_upload, "export_documents", return_value=[source.with_suffix(".pdf")]), \
                     patch.object(cloud_upload, "upload_files", return_value=[]) as upload, \
-                    patch.object(cloud_upload, "destination_folder") as make_folder:
+                    patch.object(cloud_upload, "destination_folder") as make_folder, \
+                    patch.object(cloud_upload, "app_root_folder", return_value={"id": "app-root", "name": "食影筆記"}):
                 cloud_upload.upload_recipe(source, ("pdf",), service=object(), progress=lambda text: None)
                 make_folder.assert_not_called()
                 upload.assert_called_once()
+                self.assertEqual(upload.call_args.kwargs["parent_id"], "app-root")
 
 
 if __name__ == "__main__":
@@ -249,12 +251,13 @@ if __name__ == "__main__":
 
 
 class GoogleScopeTests(unittest.TestCase):
-    def test_old_drive_file_token_triggers_new_login(self):
+    def test_old_full_drive_token_triggers_drive_file_login(self):
+        """舊版 drive 權限的授權不沿用，改以 drive.file 重新登入，同意畫面只要求 App 自己的檔案。"""
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
         old = Credentials(token="t", refresh_token="r", client_id="c", client_secret="s",
                           token_uri="https://oauth2.googleapis.com/token",
-                          scopes=["https://www.googleapis.com/auth/drive.file"])
+                          scopes=["https://www.googleapis.com/auth/drive"])
         fresh = MagicMock()
         fresh.to_json.return_value = "{}"
         with tempfile.TemporaryDirectory() as folder:
@@ -266,7 +269,7 @@ class GoogleScopeTests(unittest.TestCase):
                 factory.return_value.run_local_server.return_value = fresh
                 self.assertIs(cloud_upload.google_credentials(), fresh)
                 factory.assert_called_once()
-                self.assertEqual(factory.call_args.args[1], ["https://www.googleapis.com/auth/drive"])
+                self.assertEqual(factory.call_args.args[1], ["https://www.googleapis.com/auth/drive.file"])
 
 
 class PlainSubtitleTests(unittest.TestCase):

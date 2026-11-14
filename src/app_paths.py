@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 
 FROZEN = getattr(sys, "frozen", False)
+# 使用者看到的 App 名稱；程式檔名、安裝與資料資料夾仍沿用 RecipeLens，避免升級後找不到舊資料。
+APP_NAME = "食影筆記"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -23,7 +25,7 @@ def local_app_data():
     return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
 
 
-# 唯讀資源：assets、picker_page.html、內嵌的 Google 用戶端。
+# 唯讀資源：assets、內嵌的 Google 用戶端。
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT)) if FROZEN else PROJECT_ROOT
 # 安裝資料夾：RecipeLens.exe 與 tools/（FFmpeg、yt-dlp、Deno）。
 APP_ROOT = Path(sys.executable).resolve().parent if FROZEN else PROJECT_ROOT
